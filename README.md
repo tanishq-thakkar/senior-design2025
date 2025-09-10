@@ -1,2 +1,2 @@
 # senior-design2025
-BearcatsDonna: Capstone Project
+UniSync: Capstone Project
