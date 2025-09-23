@@ -1,13 +1,13 @@
-Introduction
+Introduction - 
 For my senior design project my group is developing Unisync, a campus-specific, secure, and personalized voice assistant designed to support University of Cincinnati students in managing academic and campus life. Built on AWS services and LLMs, Unisync will answer everyday student questions, integrate securely with Canvas and personal calendars, and reduce the friction of staying organized. From an academic perspective, this project is an ideal opportunity to combine my interests in artificial intelligence, natural language processing, and cloud computing into a unified, end-to-end system. The voice assistant will incorporate services such as Amazon Bedrock, Transcribe, Polly, and Cognito to provide a seamless and secure conversational interface. This project really excites me as I am getting a chance to directly impact the life of students on campus.
 
-Academic Preparation
+Academic Preparation - 
 My computer science curriculum has equipped me with the theoretical and technical foundation to approach this ambitious project. In Data Structures and Algorithms I have learned critical problem solving techniques and various data structures to hold data, in web development course I have learned how to make API's and I had an opportunity to learn about how the http and https works I have also learned about these in computer networks, in my operating systems class I have learned how processes and threads work and how we can write multi threaded programs. Apart from that I am also an executive member of the UCAI club on campus has made me explore more in depth of AI.
 
-Professional Experience
+Professional Experience - 
 My co-op experiences have allowed me to apply these academic concepts in real-world problems, I have done my first co-op in Taiwan as a research assistant where I was responsible to work on the navigation part of an autonomous submarine that could detect pollution under water, in this experience I was mainly working with raspberry pi, ROS 2, C++ and python. In my other two co-ops I was working as an AI/ML intern at CCHMC where I was responsible to build the backend of a chatbot for the patients so that they can avoid going through a 200 page instructions booklet but rather directly ask the chatbot, in this experience I was mainly dealing with Python and other agentic libraries like LangGraph and LangChain to set up the pipeline for RAG and I have worked with FAISS vector store to save the vectors on which a cosine similarity search can be done later when context is needed.
 
-Motivation
+Motivation - 
 I’m highly motivated for this project as I have struggled maintaining myself by juggling through different apps like canvas, calendar, teams, outlook, catalyst, UC library, UC websites for information, I would personally like to have access to all that via one stop application with AI integration for ease of use and comfort. Technically this project excites me because of the challenges like integrating AI and API routing while not deviating from the final goal, designing this project will be really interesting as there are so many edge cases to be taken into consideration while keeping a large and vast group of people coming from different backgrounds and their familiarity with tech and AI. The main goal for us is to make this application as seemless and smooth as possible so that even a high schooler with 0 knowledge in tech can easily use the application.
 
 Preliminary Approach and Self-Evaluation
