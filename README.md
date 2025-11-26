@@ -1,7 +1,7 @@
 # Final Design Report – Fall Semester
 
 ## 🧑‍🤝‍🧑 Team Members & Advisor
-- Sai Abhishek Ketepally
+- Abhishek Ketepally
 - Ansh Bhanushali
 - Tanishq Thakkar
 - Advisor: Dr. Ali Minai
