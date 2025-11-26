@@ -1,9 +1,9 @@
 # Final Design Report – Fall Semester
 
 ## 🧑‍🤝‍🧑 Team Members & Advisor
-- Name 1  
-- Name 2  
-- Name 3  
+- Sai Abhishek Ketepally
+- Ansh Bhanushali
+- Tanishq Thakkar
 - Advisor: Dr. ____________
 
 ### 🔍 Project Abstract (≤ 400 characters)
