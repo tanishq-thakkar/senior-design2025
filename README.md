@@ -7,14 +7,8 @@
 - Advisor: Dr. ____________
 
 ### 🔍 Project Abstract (≤ 400 characters)
-> Here’s a version under 400 characters:
-
----
 
 This project aims to make Bearcats' lives easier by combining essential university tools like Teams, Outlook, and Canvas into one unified platform. Students will be able to access messages, emails, assignments, and more through both text and voice input, reducing app switching and improving productivity and convenience.
-
-
----
 
 ## 📄 Table of Contents
 | Section | File Link |
