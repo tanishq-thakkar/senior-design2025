@@ -4,7 +4,7 @@
 - Sai Abhishek Ketepally
 - Ansh Bhanushali
 - Tanishq Thakkar
-- Advisor: Dr. ____________
+- Advisor: Dr. Ali Minai
 
 ### 🔍 Project Abstract (≤ 400 characters)
 
