@@ -21,7 +21,7 @@ This project aims to make Bearcats' lives easier by combining essential universi
 | 6. PPT Slideshow (with ABET) | [presentation/Final_Presentation.pdf](./Documentation/Final_Presentation.md) |
 | 7. Self-Assessment Essays | [essays/Self_Assessments.md](./Documentation/Homework%20Essays) |
 | 8. Professional Biographies | [docs/Professional_Bios.md](./Documentation/Professional%20Biographies) |
-| 9. Budget | [docs/Budget.md](./docs/Budget.md) |
+| 9. Budget | [docs/Budget.md](./Documentation/Project_Cost_Estimate.md) |
 | 10. Appendix | [docs/Appendix.md](./docs/Appendix.md) |
 
 ---
