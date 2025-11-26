@@ -1,49 +1,91 @@
-Assignment #7 Constraint Essay - Group Assignment
-Team –
-Ansh Bhanushali
-Abhishek Ketepally
-Tanishq Thakkar
-UniSync Project – Design Constraints Essay
-Our UniSync project, an AI-powered voice assistant for University of Cincinnati students,
-faces several design constraints that shape our technical, ethical, and social
-decisions. Economically, we are limited by access to free or university-supported tools
-such as AWS Educate, open-source frameworks, and student-tier cloud credits. This
-restricts our scalability and API usage, but we plan to mitigate these issues through cost
-optimization, model caching, and modular deployment to ensure functionality within
-budget.
-From a professional standpoint, this project directly impacts our growth as future software
-engineers. It requires applying industry standards in AI design, documentation, and agile
-teamwork while reflecting our professional responsibility to produce reliable, maintainable,
-and ethical software. We plan to uphold these standards through code reviews, proper
-version control, and clear documentation.
-Ethically, UniSync must safeguard fairness and prevent bias in responses. AI systems
-often inherit bias from training data, so our team is committed to testing model outputs for
-neutrality, maintaining transparency in data handling, and ensuring that all interactions are
-respectful and inclusive.
-On the legal side, our project must comply with university and federal data protection laws,
-including FERPA. We also ensure that no copyrighted data or proprietary APIs are used
-without authorization. We will rely on open data sources and ensure that all datasets and
-libraries are properly licensed for educational use.
-Security is a major constraint because UniSync interfaces with sensitive student systems
-like Canvas or Corq. We are implementing encrypted communication, token-based
-authentication, and minimal data storage. Logs will exclude any personal identifiers,
-aligning with privacy standards and reducing the risk of breaches.
-From a social perspective, UniSync aims to enhance campus life by simplifying access to
-academic and event information. It supports inclusivity by serving as a digital assistant that
-saves time, reduces stress, and increases student engagement. By providing accurate,
-real-time responses, UniSync contributes to student success and community connection.
-Environmental considerations also play a role, as AI systems can consume significant
-computing resources. Our approach includes using energy-eOicient cloud services and
-optimizing our model to reduce unnecessary compute cycles. Deploying in scalable,
-serverless environments minimizes idle energy consumption and contributes to
-sustainable computing.
-Finally, diversity and cultural impact are core to our design. UC’s student body is globally
-diverse, so we aim to make UniSync accessible to users with diOerent linguistic, cultural,
-and accessibility needs. Features such as multilingual support, accent-tolerant speech
-recognition, and ADA-compliant interfaces will ensure that every student can benefit
-equally from the assistant.
-In conclusion, while UniSync’s development is bounded by economic, professional,
-ethical, legal, security, social, environmental, and cultural constraints, these limitations
-drive our team to innovate responsibly. They ensure that the system we create is secure,
-inclusive, sustainable, and aligned with the values of both the University of Cincinnati and
-the broader engineering profession.
+# Assignment #7 – Design Constraints Essay  
+### Team: **Ansh Bhanushali · Sai Abhishek Ketepally · Tanishq Thakkar**  
+### Project: **UniSync – Voice Assistant for Bearcats**
+
+---
+
+## **Design Constraints Essay**
+
+Our UniSync project—an AI-powered voice assistant for University of Cincinnati students—operates under multiple design constraints that influence our technical, ethical, and development decisions. These constraints guide us toward building a reliable, compliant, and student-focused system.
+
+---
+
+### **1. Economic Constraints**
+We are limited to student-accessible tools such as AWS Educate, open-source packages, and university cloud credits. This restricts scale, compute capacity, and high-volume API usage.  
+To operate within budget, we plan to:
+
+- Optimize cost through efficient model usage
+- Apply caching and rate-limited request handling
+- Use modular deployment to scale only when necessary  
+
+---
+
+### **2. Professional Constraints**
+The project contributes directly to our growth as engineering professionals. We must apply real industry practices in AI development, collaboration, and documentation.  
+
+Our approach includes:
+
+- Code reviews and version control best practices
+- Clear and maintainable documentation
+- Ethical and reliable software engineering standards  
+
+---
+
+### **3. Ethical Constraints**
+AI systems risk bias and misinformation, so fairness and inclusivity are critical. We will:
+
+- Test outputs for bias and ensure response neutrality
+- Maintain transparency in data usage
+- Promote respectful, inclusive communication at all times
+
+---
+
+### **4. Legal Constraints**
+Handling student data requires strict compliance with university policy and U.S. regulations such as **FERPA**. We commit to:
+
+- Avoiding unauthorized access to proprietary APIs
+- Using properly licensed datasets and open-source libraries
+- Ensuring consent-based authentication for student systems
+
+---
+
+### **5. Security Constraints**
+UniSync may interface with systems containing personal, academic, or scheduling data. To prevent misuse or data exposure, we will implement:
+
+- Token-based authentication
+- Encrypted data transmission
+- Minimal data retention and PII-free logging  
+
+---
+
+### **6. Social Constraints**
+UniSync is built to enhance digital life on campus by reducing friction between everyday tools. It supports accessibility and student success by:
+
+- Delivering quick, real-time information
+- Reducing stress and time spent navigating multiple apps
+- Increasing engagement and academic organization
+
+---
+
+### **7. Environmental Constraints**
+AI workloads consume energy and compute resources. To remain sustainable, we plan to:
+
+- Use energy-efficient, scalable cloud infrastructures
+- Optimize our model to avoid unnecessary compute cycles
+- Prefer serverless deployments to reduce idle resource usage
+
+---
+
+### **8. Cultural & Diversity Constraints**
+UC's campus is globally diverse, so accessibility is a core requirement. We will work to ensure UniSync can serve every student by supporting:
+
+- Multilingual and accent-tolerant voice recognition
+- ADA-compliant UI and interaction design
+- Cultural neutrality in information retrieval and responses  
+
+---
+
+## **Conclusion**
+While UniSync’s development is shaped by economic, ethical, legal, professional, environmental, and cultural constraints, these limitations guide us toward responsible innovation. These boundaries ensure that our system is secure, inclusive, sustainable, and aligned with both university expectations and modern engineering standards.
+
+---
