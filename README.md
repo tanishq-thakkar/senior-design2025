@@ -1,9 +1,9 @@
 # Final Design Report – Fall Semester
 
 ## 🧑‍🤝‍🧑 Team Members & Advisor
+- Tanishq Thakkar
 - Abhishek Ketepally
 - Ansh Bhanushali
-- Tanishq Thakkar
 - Advisor: Dr. Ali Minai
 
 ### 🔍 Project Abstract (≤ 400 characters)
