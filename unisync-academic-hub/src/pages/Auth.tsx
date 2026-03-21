@@ -32,6 +32,19 @@ const signUpSchema = z.object({
 type SignInValues = z.infer<typeof signInSchema>;
 type SignUpValues = z.infer<typeof signUpSchema>;
 
+/** Supabase caps auth emails/hour on hosted projects; surface actionable help. */
+function toastAuthError(err: Error) {
+  const m = err.message.toLowerCase();
+  if (m.includes("rate limit") || m.includes("email rate")) {
+    toast.error(
+      "Supabase is temporarily blocking more auth emails (hourly limit). Wait a bit and retry, or in the Supabase dashboard go to Authentication → Providers → Email and disable “Confirm email” while you develop so sign-up does not send mail.",
+      { duration: 14_000 },
+    );
+    return;
+  }
+  toast.error(err.message);
+}
+
 export default function Auth() {
   const { signIn, signUp, user, loading, supabaseReady } = useAuth();
   const navigate = useNavigate();
@@ -90,7 +103,7 @@ export default function Auth() {
   const onSignIn = signInForm.handleSubmit(async (values) => {
     const { error } = await signIn(values.email, values.password);
     if (error) {
-      toast.error(error.message);
+      toastAuthError(error);
       return;
     }
     toast.success("Signed in");
@@ -100,7 +113,7 @@ export default function Auth() {
   const onSignUp = signUpForm.handleSubmit(async (values) => {
     const { error } = await signUp(values.email, values.password, values.fullName?.trim() || undefined);
     if (error) {
-      toast.error(error.message);
+      toastAuthError(error);
       return;
     }
     toast.success("Check your email to confirm your account, or sign in if confirmation is disabled.");
