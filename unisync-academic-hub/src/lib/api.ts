@@ -1,13 +1,17 @@
 // src/lib/api.ts
 import { useQuery, useMutation, UseQueryOptions, UseMutationOptions } from '@tanstack/react-query';
 import axios from 'axios';
-import type { Conversation, Message } from "@/types/chat"; // adjust if path is different
+import { getSupabase, isSupabaseConfigured } from "@/lib/supabaseClient";
 
 // Base URL from .env (falls back to localhost in development)
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
-// Helper to get auth token (adjust according to how you store it)
-const getToken = () => localStorage.getItem('token') || '';
+async function getAuthHeader(): Promise<Record<string, string>> {
+  if (!isSupabaseConfigured()) return {};
+  const { data: { session } } = await getSupabase().auth.getSession();
+  if (!session?.access_token) return {};
+  return { Authorization: `Bearer ${session.access_token}` };
+}
 
 // Basic fetch wrapper with auth & error handling
 export async function apiFetch<T>(
@@ -16,9 +20,10 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 
+  const auth = await getAuthHeader();
   const headers = {
     'Content-Type': 'application/json',
-    ...(getToken() && { Authorization: `Bearer ${getToken()}` }),
+    ...auth,
     ...options.headers,
   };
 
@@ -43,10 +48,10 @@ export const api = axios.create({
   },
 });
 
-api.interceptors.request.use((config) => {
-  const token = getToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+api.interceptors.request.use(async (config) => {
+  const auth = await getAuthHeader();
+  if (auth.Authorization) {
+    config.headers.Authorization = auth.Authorization;
   }
   return config;
 });
