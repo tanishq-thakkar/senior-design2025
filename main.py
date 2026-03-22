@@ -53,7 +53,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         tasks = []
 
-        for _ in range(CONCURRENT_REQUESTS):
+        for i in range(CONCURRENT_REQUESTS):
             tasks.append(worker(session, domain))
 
         await asyncio.gather(*tasks)
