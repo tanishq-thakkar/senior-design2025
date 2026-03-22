@@ -12,11 +12,10 @@ import {
 } from "@/lib/api";
 import type { Message, Conversation } from "@/types/chat";
 
-// Define the shape of responses from your backend endpoints
-interface CreateConversationResponse extends Conversation {} // or just Conversation if id/title are already in type
+interface CreateConversationResponse extends Conversation {}
 
 interface SendMessageResponse {
-  assistant: string; // what your /messages endpoint returns
+  assistant: string;
 }
 
 export default function Chat() {
@@ -27,77 +26,104 @@ export default function Chat() {
 
   const [activeConversationId, setActiveConversationId] = useState<string>();
 
-  // Fetch all conversations
   const {
     data: conversations = [],
     isLoading: convLoading,
-    error: convError,
   } = useApiQuery<Conversation[]>("conversations", "/chat/conversations");
 
-  // Fetch messages for active conversation
   const {
     data: messages = [],
     isLoading: messagesLoading,
   } = useApiQuery<Message[]>(
-    ["messages", activeConversationId],
-    activeConversationId ? `/chat/conversations/${activeConversationId}/messages` : "",
-    { enabled: !!activeConversationId }
-  );
-
-  // Mutation for sending a message
-  const sendMessageMutation = useApiMutation<SendMessageResponse, { convoId: string; content: string }>(
-    async ({ convoId, content }) => {
-      return apiFetch<SendMessageResponse>(`/chat/conversations/${convoId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ content }),
-      });
-    },
+    ["messages", activeConversationId ?? ""],
+    activeConversationId
+      ? `/chat/conversations/${activeConversationId}/messages`
+      : "/chat/conversations/__none__/messages",
     {
-      onMutate: async ({ convoId, content }) => {
-        // Optimistic update
-        const userMessage: Message = {
-          id: Date.now().toString(),
-          role: "user",
-          content,
-          timestamp: new Date(),
-        };
-
-        queryClient.setQueryData<Message[]>(
-          ["messages", convoId],
-          (old = []) => [...old, userMessage]
-        );
-
-        return { convoId };
-      },
-      onSuccess: (assistantResponse, { convoId }) => {
-        // Add assistant message from backend response
-        const assistantMessage: Message = {
-          id: Date.now().toString() + "-assistant",
-          role: "assistant",
-          content: assistantResponse.assistant,
-          timestamp: new Date(),
-        };
-
-        queryClient.setQueryData<Message[]>(
-          ["messages", convoId],
-          (old = []) => [...old, assistantMessage]
-        );
-
-        // Invalidate conversations list to update last message/title
-        queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      },
-      onError: (err, { convoId }) => {
-        // Rollback optimistic update on error
-        queryClient.setQueryData<Message[]>(["messages", convoId], (old) =>
-          old?.filter((m) => m.role !== "user" || !m.content.includes("...thinking...")) ?? []
-        );
-      },
+      enabled: !!activeConversationId,
+      retry: false,
     }
   );
 
-  // Mutation for creating new conversation
+  const sendMessageMutation = useApiMutation<
+  SendMessageResponse,
+  { convoId: string; content: string }
+>(
+  async ({ convoId, content }) => {
+    return apiFetch<SendMessageResponse>(
+      `/chat/conversations/${convoId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      }
+    );
+  },
+  {
+    onMutate: async ({ convoId, content }) => {
+      await queryClient.cancelQueries({ queryKey: ["messages", convoId] });
+
+      const previousMessages =
+        queryClient.getQueryData<Message[]>(["messages", convoId]) ?? [];
+
+      const userMessage: Message = {
+        id: `temp-user-${Date.now()}`,
+        role: "user",
+        content,
+        timestamp: new Date().toISOString(),
+      };
+
+      queryClient.setQueryData<Message[]>(
+        ["messages", convoId],
+        [...previousMessages, userMessage]
+      );
+    },
+
+    onSuccess: async (assistantResponse, { convoId }) => {
+      const assistantMessage: Message = {
+        id: `temp-assistant-${Date.now()}`,
+        role: "assistant",
+        content: assistantResponse.assistant,
+        timestamp: new Date().toISOString(),
+      };
+      const speak = async () => {
+        const res = await fetch("http://localhost:8000/voice/speak", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: assistantResponse.assistant,
+            voice: "alloy",
+            speed: 1.0,
+          }),
+        });
+      
+        const blob = await res.blob();
+        const audio = new Audio(URL.createObjectURL(blob));
+        await audio.play();
+      };
+      
+      speak();
+
+      queryClient.setQueryData<Message[]>(
+        ["messages", convoId],
+        (old = []) => [...old, assistantMessage]
+      );
+
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    },
+
+    onError: async (_err, { convoId }) => {
+      await queryClient.invalidateQueries({ queryKey: ["messages", convoId] });
+    },
+  }
+);
+
   const createConversationMutation = useApiMutation<CreateConversationResponse, void>(
-    () => apiFetch<CreateConversationResponse>("/chat/conversations", { method: "POST" }),
+    () =>
+      apiFetch<CreateConversationResponse>("/chat/conversations", {
+        method: "POST",
+      }),
     {
       onSuccess: (newConvo) => {
         setActiveConversationId(newConvo.id);
@@ -109,7 +135,6 @@ export default function Chat() {
     }
   );
 
-  // Handle initial message from home page
   useEffect(() => {
     if (initialMessage) {
       createConversationMutation.mutate(undefined, {
@@ -120,38 +145,68 @@ export default function Chat() {
           });
         },
       });
+
       window.history.replaceState({}, document.title);
     }
   }, [initialMessage]);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, sendMessageMutation.isPending]);
+
+  useEffect(() => {
+    if (!conversations.length) {
+      setActiveConversationId(undefined);
+      return;
+    }
+
+    if (
+      activeConversationId &&
+      !conversations.some((c) => c.id === activeConversationId)
+    ) {
+      setActiveConversationId(undefined);
+    }
+  }, [conversations, activeConversationId]);
+
+  useEffect(() => {
+    if (!activeConversationId && conversations.length > 0) {
+      setActiveConversationId(conversations[0].id);
+    }
+  }, [conversations, activeConversationId]);
 
   const handleNewConversation = () => {
+    setActiveConversationId(undefined);
     createConversationMutation.mutate();
   };
 
   const handleSubmit = (content: string) => {
+    if (!content.trim()) return;
+
     if (!activeConversationId) {
       createConversationMutation.mutate(undefined, {
         onSuccess: (newConvo) => {
-          sendMessageMutation.mutate({ convoId: newConvo.id, content });
+          sendMessageMutation.mutate({
+            convoId: newConvo.id,
+            content,
+          });
         },
       });
     } else {
-      sendMessageMutation.mutate({ convoId: activeConversationId, content });
+      sendMessageMutation.mutate({
+        convoId: activeConversationId,
+        content,
+      });
     }
   };
 
   const handleDeleteConversation = async (id: string) => {
-    // Optional: add DELETE endpoint later
-    // await apiFetch(`/chat/conversations/${id}`, { method: "DELETE" });
     queryClient.setQueryData<Conversation[]>(
       ["conversations"],
       (old) => old?.filter((c) => c.id !== id) ?? []
     );
+
+    queryClient.removeQueries({ queryKey: ["messages", id] });
+
     if (activeConversationId === id) {
       setActiveConversationId(undefined);
     }
@@ -159,7 +214,6 @@ export default function Chat() {
 
   return (
     <div className="flex h-screen pt-16">
-      {/* Sidebar */}
       <ConversationSidebar
         conversations={conversations}
         activeId={activeConversationId}
@@ -169,14 +223,13 @@ export default function Chat() {
         isLoading={convLoading}
       />
 
-      {/* Main chat area */}
       <main className="flex flex-1 flex-col">
         {messagesLoading || convLoading ? (
-          <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-1 items-center justify-center">
             <p className="text-muted-foreground">Loading...</p>
           </div>
         ) : messages.length === 0 && !activeConversationId ? (
-          <div className="flex-1 flex flex-col items-center justify-center">
+          <div className="flex flex-1 flex-col items-center justify-center">
             <p className="mb-6 text-lg text-muted-foreground">
               Start a new conversation or select one from the sidebar.
             </p>
@@ -184,13 +237,13 @@ export default function Chat() {
           </div>
         ) : (
           <>
-            {/* Messages */}
             <div className="flex-1 overflow-y-auto">
               <div className="mx-auto max-w-3xl px-4 py-6">
                 <div className="space-y-6">
                   {messages.map((message) => (
                     <MessageBubble key={message.id} message={message} />
                   ))}
+
                   {sendMessageMutation.isPending && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
                       <span className="inline-block h-2 w-2 rounded-full bg-primary" />
@@ -199,17 +252,20 @@ export default function Chat() {
                       <span>UniSync is thinking...</span>
                     </div>
                   )}
+
                   <div ref={messagesEndRef} />
                 </div>
               </div>
             </div>
 
-            {/* Input */}
             <div className="border-t border-border bg-background p-4">
               <div className="mx-auto max-w-3xl">
                 <ChatInput
                   onSubmit={handleSubmit}
-                  disabled={sendMessageMutation.isPending}
+                  disabled={
+                    sendMessageMutation.isPending ||
+                    createConversationMutation.isPending
+                  }
                 />
               </div>
             </div>

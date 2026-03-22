@@ -18,12 +18,12 @@ export interface SourceItem {
 
 export interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
-  timestamp: Date;
+  timestamp: string;
   sources?: SourceSection[];
-  confidence?: 'high' | 'partial';
-  lastSynced?: Date;
+  confidence?: "high" | "partial";
+  lastSynced?: string;
   sourcesChecked?: string[];
 }
 
@@ -31,7 +31,7 @@ export interface Conversation {
   id: string;
   title: string;
   lastMessage: string;
-  timestamp: Date;
+  timestamp: string;
   messages: Message[];
 }
 
