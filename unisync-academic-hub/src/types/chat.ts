@@ -1,4 +1,4 @@
-export type SourceType = 'canvas' | 'calendar' | 'email' | 'events';
+export type SourceType = 'canvas' | 'calendar' | 'email' | 'events' | 'chat_history';
 
 export interface SourceSection {
   type: SourceType;
@@ -16,6 +16,11 @@ export interface SourceItem {
   priority?: 'high' | 'medium' | 'low';
 }
 
+export interface ReasoningStep {
+  label: string;
+  detail: string;
+}
+
 export interface Message {
   id: string;
   role: "user" | "assistant";
@@ -25,6 +30,7 @@ export interface Message {
   confidence?: "high" | "partial";
   lastSynced?: string;
   sourcesChecked?: string[];
+  reasoningSummary?: ReasoningStep[];
 }
 
 export interface Conversation {
@@ -53,4 +59,24 @@ export interface TimelineItem {
   source: SourceType;
   course?: string;
   location?: string;
+}
+
+export interface PrivacyUsageResponse {
+  totalConversations: number;
+  totalMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  localStorageKeysExpected: string[];
+  backendStores: string[];
+  llmProvider: string;
+  modelUsed: string;
+  retentionNote: string;
+  exportedAt: string;
+}
+
+export interface PrivacyExportResponse {
+  exportedAt: string;
+  settingsHint: string;
+  usage: PrivacyUsageResponse;
+  conversations: Conversation[];
 }

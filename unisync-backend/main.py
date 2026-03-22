@@ -1,16 +1,16 @@
 import os
 import tempfile
+import io
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from openai import OpenAI
 from fastapi.responses import StreamingResponse
-import io
+from pydantic import BaseModel, Field
+from openai import OpenAI
 
 load_dotenv()
 
@@ -35,11 +35,24 @@ app.add_middleware(
 )
 
 
+# -------------------------
+# Models
+# -------------------------
+
+class ReasoningStep(BaseModel):
+    label: str
+    detail: str
+
+
 class Message(BaseModel):
     id: str
     role: Literal["user", "assistant"]
     content: str
     timestamp: str
+    reasoningSummary: list[ReasoningStep] = Field(default_factory=list)
+    confidence: Optional[Literal["high", "partial"]] = None
+    sourcesChecked: list[str] = Field(default_factory=list)
+    lastSynced: Optional[str] = None
 
 
 class Conversation(BaseModel):
@@ -47,7 +60,7 @@ class Conversation(BaseModel):
     title: str
     lastMessage: str
     timestamp: str
-    messages: list[Message] = []
+    messages: list[Message] = Field(default_factory=list)
 
 
 class CreateConversationResponse(Conversation):
@@ -60,10 +73,12 @@ class SendMessageRequest(BaseModel):
 
 class SendMessageResponse(BaseModel):
     assistant: str
+    message: Message
 
 
 class TranscriptionResponse(BaseModel):
     text: str
+
 
 class SpeechRequest(BaseModel):
     text: str
@@ -71,8 +86,36 @@ class SpeechRequest(BaseModel):
     speed: float = 1.0
 
 
+class PrivacyUsageResponse(BaseModel):
+    totalConversations: int
+    totalMessages: int
+    userMessages: int
+    assistantMessages: int
+    localStorageKeysExpected: list[str]
+    backendStores: list[str]
+    llmProvider: str
+    modelUsed: str
+    retentionNote: str
+    exportedAt: str
+
+
+class PrivacyExportResponse(BaseModel):
+    exportedAt: str
+    settingsHint: str
+    usage: PrivacyUsageResponse
+    conversations: list[Conversation]
+
+
+# -------------------------
+# In-memory store
+# -------------------------
+
 conversations_store: dict[str, Conversation] = {}
 
+
+# -------------------------
+# Helpers
+# -------------------------
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -84,6 +127,85 @@ def make_title(text: str) -> str:
         return "New Chat"
     return text[:40] + ("..." if len(text) > 40 else "")
 
+
+def get_usage_snapshot() -> PrivacyUsageResponse:
+    conversations = list(conversations_store.values())
+    total_messages = sum(len(c.messages) for c in conversations)
+    user_messages = sum(
+        1 for c in conversations for m in c.messages if m.role == "user"
+    )
+    assistant_messages = sum(
+        1 for c in conversations for m in c.messages if m.role == "assistant"
+    )
+
+    return PrivacyUsageResponse(
+        totalConversations=len(conversations),
+        totalMessages=total_messages,
+        userMessages=user_messages,
+        assistantMessages=assistant_messages,
+        localStorageKeysExpected=[
+            "unisync_settings",
+            "token",
+            "unisync_conversations",
+        ],
+        backendStores=[
+            "conversation metadata",
+            "message history",
+            "reasoning summary metadata",
+        ],
+        llmProvider="OpenAI",
+        modelUsed="gpt-4o-mini",
+        retentionNote=(
+            "Current prototype stores chat data in backend memory only while the server is running. "
+            "No database persistence is enabled yet."
+        ),
+        exportedAt=now_iso(),
+    )
+
+
+def build_reasoning_summary(user_text: str, convo: Conversation) -> tuple[list[ReasoningStep], str, list[str], str]:
+    text = user_text.lower()
+
+    sources_checked = ["chat_history"]
+    confidence = "partial"
+
+    if any(word in text for word in ["assignment", "deadline", "canvas", "course", "class"]):
+        sources_checked.append("canvas")
+        confidence = "high"
+
+    if any(word in text for word in ["email", "outlook", "mail"]):
+        sources_checked.append("email")
+        confidence = "high"
+
+    if any(word in text for word in ["calendar", "meeting", "schedule", "event"]):
+        sources_checked.append("calendar")
+        confidence = "high"
+
+    steps = [
+        ReasoningStep(
+            label="Interpret request",
+            detail="Identified the user's intent from the latest message."
+        ),
+        ReasoningStep(
+            label="Check context",
+            detail=f"Considered {len(convo.messages)} messages in the current conversation."
+        ),
+        ReasoningStep(
+            label="Select sources",
+            detail=f"Prepared likely data sources: {', '.join(sources_checked)}."
+        ),
+        ReasoningStep(
+            label="Generate answer",
+            detail="Produced a concise response tailored for a university student workflow."
+        ),
+    ]
+
+    return steps, confidence, sources_checked, now_iso()
+
+
+# -------------------------
+# Routes
+# -------------------------
 
 @app.get("/health")
 def health():
@@ -119,6 +241,16 @@ def get_messages(convo_id: str):
     return convo.messages
 
 
+@app.delete("/chat/conversations/{convo_id}")
+def delete_conversation(convo_id: str):
+    convo = conversations_store.get(convo_id)
+    if not convo:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    del conversations_store[convo_id]
+    return {"success": True, "deletedConversationId": convo_id}
+
+
 @app.post("/chat/conversations/{convo_id}/messages", response_model=SendMessageResponse)
 def send_message(convo_id: str, body: SendMessageRequest):
     convo = conversations_store.get(convo_id)
@@ -137,6 +269,11 @@ def send_message(convo_id: str, body: SendMessageRequest):
     if len(user_messages) == 1:
         convo.title = make_title(body.content)
 
+    reasoning_steps, confidence, sources_checked, last_synced = build_reasoning_summary(
+        body.content,
+        convo,
+    )
+
     try:
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -145,7 +282,9 @@ def send_message(convo_id: str, body: SendMessageRequest):
                     "role": "system",
                     "content": (
                         "You are UniSync, a helpful academic assistant for university students. "
-                        "Be clear, concise, practical, and friendly."
+                        "Be clear, concise, practical, and friendly. "
+                        "Do not reveal private chain-of-thought. "
+                        "Give a direct answer."
                     ),
                 },
                 *[
@@ -168,14 +307,48 @@ def send_message(convo_id: str, body: SendMessageRequest):
         role="assistant",
         content=assistant_text,
         timestamp=now_iso(),
+        reasoningSummary=reasoning_steps,
+        confidence=confidence,
+        sourcesChecked=sources_checked,
+        lastSynced=last_synced,
     )
+
     convo.messages.append(assistant_message)
     convo.lastMessage = assistant_text
     convo.timestamp = now_iso()
-
     conversations_store[convo_id] = convo
 
-    return SendMessageResponse(assistant=assistant_text)
+    return SendMessageResponse(
+        assistant=assistant_text,
+        message=assistant_message,
+    )
+
+
+@app.get("/privacy/usage", response_model=PrivacyUsageResponse)
+def privacy_usage():
+    return get_usage_snapshot()
+
+
+@app.get("/privacy/export", response_model=PrivacyExportResponse)
+def privacy_export():
+    conversations = list(conversations_store.values())
+    conversations.sort(key=lambda c: c.timestamp, reverse=True)
+
+    return PrivacyExportResponse(
+        exportedAt=now_iso(),
+        settingsHint="Frontend local settings are stored in browser localStorage and should be merged client-side into the final export file.",
+        usage=get_usage_snapshot(),
+        conversations=conversations,
+    )
+
+
+@app.delete("/privacy/data")
+def delete_all_data():
+    conversations_store.clear()
+    return {
+        "success": True,
+        "message": "All backend UniSync conversation data has been deleted."
+    }
 
 
 @app.post("/voice/transcribe", response_model=TranscriptionResponse)
@@ -184,10 +357,6 @@ async def transcribe_audio(
     prompt: str | None = Form(default=None),
     language: str | None = Form(default=None),
 ):
-    """
-    Accepts an uploaded audio file from the frontend (webm/wav/m4a/mp3/etc),
-    sends it to OpenAI transcription, and returns plain text.
-    """
     suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
 
     try:
@@ -224,26 +393,27 @@ async def transcribe_audio(
                 os.remove(temp_path)
         except Exception:
             pass
-    
+
+
 @app.post("/voice/speak")
 def speak_text(body: SpeechRequest):
-        try:
-            speech_response = client.audio.speech.create(
-                model="gpt-4o-mini-tts",
-                voice=body.voice,
-                input=body.text,
-                speed=body.speed,
-                response_format="mp3",
-            )
+    try:
+        speech_response = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice=body.voice,
+            input=body.text,
+            speed=body.speed,
+            response_format="mp3",
+        )
 
-            audio_bytes = speech_response.read()
+        audio_bytes = speech_response.read()
 
-            return StreamingResponse(
-                io.BytesIO(audio_bytes),
-                media_type="audio/mpeg",
-                headers={"Content-Disposition": "inline; filename=reply.mp3"},
-            )
+        return StreamingResponse(
+            io.BytesIO(audio_bytes),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "inline; filename=reply.mp3"},
+        )
 
-        except Exception as e:
-            print("OPENAI TTS ERROR:", repr(e))
-            raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        print("OPENAI TTS ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=str(e))

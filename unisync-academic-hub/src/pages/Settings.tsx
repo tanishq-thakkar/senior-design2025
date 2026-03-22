@@ -1,50 +1,113 @@
-import { useSettings } from "@/contexts/SettingsContext"
+import { useState } from "react";
+import { useSettings } from "@/contexts/SettingsContext";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
+import type { PrivacyUsageResponse, PrivacyExportResponse } from "@/types/chat";
 
 export default function Settings() {
-  const { settings, updateSetting, clearAllData } = useSettings();
+  const { settings, updateSetting, clearAllLocalData } = useSettings();
   const { toast } = useToast();
 
-  const handleDownloadData = () => {
-    const data = {
-      settings,
-      exportedAt: new Date().toISOString(),
-    };
+  const [usageDetails, setUsageDetails] = useState<PrivacyUsageResponse | null>(null);
+  const [loadingUsage, setLoadingUsage] = useState(false);
+  const [loadingExport, setLoadingExport] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
+  const handleDownloadData = async () => {
+    try {
+      setLoadingExport(true);
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "unisync-data.json";
-    a.click();
-    URL.revokeObjectURL(url);
+      const backendExport = await apiFetch<PrivacyExportResponse>("/privacy/export");
 
-    toast({
-      title: "Data downloaded",
-      description: "Your UniSync data export is ready.",
-    });
+      const mergedData = {
+        exportedAt: new Date().toISOString(),
+        frontend: {
+          settings,
+          localStorageSnapshot: {
+            unisync_settings: localStorage.getItem("unisync_settings"),
+            token: localStorage.getItem("token"),
+            unisync_conversations: localStorage.getItem("unisync_conversations"),
+          },
+        },
+        backend: backendExport,
+      };
+
+      const blob = new Blob([JSON.stringify(mergedData, null, 2)], {
+        type: "application/json",
+      });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "unisync-data-export.json";
+      a.click();
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Data downloaded",
+        description: "Your full UniSync export is ready.",
+      });
+    } catch (error) {
+      toast({
+        title: "Export failed",
+        description: error instanceof Error ? error.message : "Could not export your data.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingExport(false);
+    }
   };
 
-  const handleUsageDetails = () => {
-    toast({
-      title: "Data usage",
-      description: "UniSync stores your local preferences and session data on this device.",
-    });
+  const handleUsageDetails = async () => {
+    try {
+      setLoadingUsage(true);
+      const usage = await apiFetch<PrivacyUsageResponse>("/privacy/usage");
+      setUsageDetails(usage);
+
+      toast({
+        title: "Data usage loaded",
+        description: "Scroll down to review your UniSync data usage details.",
+      });
+    } catch (error) {
+      toast({
+        title: "Could not load usage details",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingUsage(false);
+    }
   };
 
-  const handleDeleteAllData = () => {
-    clearAllData();
-    toast({
-      title: "Data cleared",
-      description: "All local UniSync data has been deleted.",
-      variant: "destructive",
-    });
+  const handleDeleteAllData = async () => {
+    try {
+      setDeleting(true);
+
+      await apiFetch<{ success: boolean; message: string }>("/privacy/data", {
+        method: "DELETE",
+      });
+
+      clearAllLocalData();
+
+      toast({
+        title: "Data cleared",
+        description: "All UniSync backend and local prototype data has been deleted.",
+        variant: "destructive",
+      });
+
+      setUsageDetails(null);
+    } catch (error) {
+      toast({
+        title: "Delete failed",
+        description: error instanceof Error ? error.message : "Could not delete your data.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -82,6 +145,19 @@ export default function Settings() {
               <Switch
                 checked={settings.voiceInput}
                 onCheckedChange={(checked) => updateSetting("voiceInput", checked)}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">Speech output</p>
+                <p className="text-sm text-muted-foreground">
+                  Let UniSync read responses aloud
+                </p>
+              </div>
+              <Switch
+                checked={settings.speechOutput}
+                onCheckedChange={(checked) => updateSetting("speechOutput", checked)}
               />
             </div>
 
@@ -149,23 +225,94 @@ export default function Settings() {
         <section className="rounded-2xl border p-6">
           <h2 className="mb-6 text-2xl font-semibold">Privacy & Data</h2>
           <p className="mb-6 text-muted-foreground">
-            UniSync accesses your academic data only when you ask a question. We don't
-            store your emails, assignments, or calendar events.
+            UniSync stores prototype chat history in the backend while the server is running
+            and keeps your UI preferences in local browser storage.
           </p>
 
           <div className="space-y-3">
-            <Button variant="outline" className="w-full justify-between" onClick={handleUsageDetails}>
-              View data usage details
+            <Button
+              variant="outline"
+              className="w-full justify-between"
+              onClick={handleUsageDetails}
+              disabled={loadingUsage}
+            >
+              {loadingUsage ? "Loading data usage..." : "View data usage details"}
             </Button>
 
-            <Button variant="outline" className="w-full justify-between" onClick={handleDownloadData}>
-              Download my data
+            <Button
+              variant="outline"
+              className="w-full justify-between"
+              onClick={handleDownloadData}
+              disabled={loadingExport}
+            >
+              {loadingExport ? "Preparing export..." : "Download my data"}
             </Button>
 
-            <Button variant="ghost" className="w-full justify-start text-red-500 hover:text-red-600" onClick={handleDeleteAllData}>
-              Delete all my data
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-red-500 hover:text-red-600"
+              onClick={handleDeleteAllData}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting..." : "Delete all my data"}
             </Button>
           </div>
+
+          {usageDetails && (
+            <div className="mt-6 rounded-xl border bg-muted/30 p-4 space-y-3">
+              <h3 className="text-lg font-semibold">Data usage details</h3>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm text-muted-foreground">Total conversations</p>
+                  <p className="text-xl font-bold">{usageDetails.totalConversations}</p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm text-muted-foreground">Total messages</p>
+                  <p className="text-xl font-bold">{usageDetails.totalMessages}</p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm text-muted-foreground">User messages</p>
+                  <p className="text-xl font-bold">{usageDetails.userMessages}</p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <p className="text-sm text-muted-foreground">Assistant messages</p>
+                  <p className="text-xl font-bold">{usageDetails.assistantMessages}</p>
+                </div>
+              </div>
+
+              <div>
+                <p className="font-medium">Browser storage keys</p>
+                <p className="text-sm text-muted-foreground">
+                  {usageDetails.localStorageKeysExpected.join(", ")}
+                </p>
+              </div>
+
+              <div>
+                <p className="font-medium">Backend data types</p>
+                <p className="text-sm text-muted-foreground">
+                  {usageDetails.backendStores.join(", ")}
+                </p>
+              </div>
+
+              <div>
+                <p className="font-medium">LLM provider</p>
+                <p className="text-sm text-muted-foreground">
+                  {usageDetails.llmProvider} · {usageDetails.modelUsed}
+                </p>
+              </div>
+
+              <div>
+                <p className="font-medium">Retention note</p>
+                <p className="text-sm text-muted-foreground">
+                  {usageDetails.retentionNote}
+                </p>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border p-6">

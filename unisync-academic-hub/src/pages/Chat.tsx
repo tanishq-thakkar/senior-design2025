@@ -5,6 +5,8 @@ import { ConversationSidebar } from "@/components/chat/ConversationSidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { SuggestedPrompts } from "@/components/chat/SuggestedPrompts";
+import { useSettings } from "@/contexts/SettingsContext";
+
 import {
   useApiQuery,
   useApiMutation,
@@ -16,6 +18,7 @@ interface CreateConversationResponse extends Conversation {}
 
 interface SendMessageResponse {
   assistant: string;
+  message: Message;
 }
 
 export default function Chat() {
@@ -23,6 +26,7 @@ export default function Chat() {
   const queryClient = useQueryClient();
   const initialMessage = location.state?.initialMessage;
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { settings } = useSettings();
 
   const [activeConversationId, setActiveConversationId] = useState<string>();
 
@@ -79,13 +83,9 @@ export default function Chat() {
     },
 
     onSuccess: async (assistantResponse, { convoId }) => {
-      const assistantMessage: Message = {
-        id: `temp-assistant-${Date.now()}`,
-        role: "assistant",
-        content: assistantResponse.assistant,
-        timestamp: new Date().toISOString(),
-      };
       const speak = async () => {
+        if (settings.speechOutput === false) return;
+      
         const res = await fetch("http://localhost:8000/voice/speak", {
           method: "POST",
           headers: {
@@ -94,22 +94,33 @@ export default function Chat() {
           body: JSON.stringify({
             text: assistantResponse.assistant,
             voice: "alloy",
-            speed: 1.0,
+            speed: settings.speechSpeed ?? 1,
           }),
         });
       
-        const blob = await res.blob();
-        const audio = new Audio(URL.createObjectURL(blob));
-        await audio.play();
-      };
+        if (!res.ok) {
+          const text = await res.text();
+          console.error("TTS request failed:", text);
+          return;
+        }
       
+        const blob = await res.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio(audioUrl);
+      
+        try {
+          await audio.play();
+        } catch (err) {
+          console.error("Audio play failed:", err);
+        }
+      };
       speak();
-
+    
       queryClient.setQueryData<Message[]>(
         ["messages", convoId],
-        (old = []) => [...old, assistantMessage]
+        (old = []) => [...old, assistantResponse.message]
       );
-
+    
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
 

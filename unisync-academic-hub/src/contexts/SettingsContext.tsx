@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 type Settings = {
   darkMode: boolean;
   voiceInput: boolean;
+  speechOutput: boolean;
   speechSpeed: number;
   captions: boolean;
   textSize: number;
@@ -16,12 +17,13 @@ type SettingsContextType = {
   settings: Settings;
   updateSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   resetSettings: () => void;
-  clearAllData: () => void;
+  clearAllLocalData: () => void;
 };
 
 const defaultSettings: Settings = {
   darkMode: false,
   voiceInput: true,
+  speechOutput: true,
   speechSpeed: 1,
   captions: false,
   textSize: 16,
@@ -59,7 +61,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     setSettings(defaultSettings);
   };
 
-  const clearAllData = () => {
+  const clearAllLocalData = () => {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem("token");
     localStorage.removeItem("unisync_conversations");
@@ -67,7 +69,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   };
 
   const value = useMemo(
-    () => ({ settings, updateSetting, resetSettings, clearAllData }),
+    () => ({ settings, updateSetting, resetSettings, clearAllLocalData }),
     [settings]
   );
 
