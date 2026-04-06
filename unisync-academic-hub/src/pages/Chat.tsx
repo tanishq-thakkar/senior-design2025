@@ -11,6 +11,7 @@ import {
   useApiQuery,
   useApiMutation,
   apiFetch,
+  API_BASE,
 } from "@/lib/api";
 import type { Message, Conversation } from "@/types/chat";
 
@@ -86,7 +87,7 @@ export default function Chat() {
       const speak = async () => {
         if (settings.speechOutput === false) return;
       
-        const res = await fetch("http://localhost:8000/voice/speak", {
+        const res = await fetch(`${API_BASE}/voice/speak`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

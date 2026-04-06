@@ -30,7 +30,6 @@ export function TopNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, loading, signOut } = useAuth();
-  const isHome = location.pathname === "/";
 
   const handleLogout = async () => {
     await signOut();
@@ -45,46 +44,48 @@ export function TopNav() {
           to="/" 
           className="flex items-center gap-2.5 transition-smooth hover:opacity-80"
         >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <span className="text-sm font-semibold text-primary-foreground">U</span>
-          </div>
+          <img
+            src="/favicon.ico"
+            alt=""
+            width={32}
+            height={32}
+            className="h-8 w-8 shrink-0 rounded-lg object-contain"
+            decoding="async"
+          />
           <span className="text-lg font-semibold tracking-tight text-foreground">
             UniSync
           </span>
         </Link>
 
-        {/* Navigation links - only show when not on home */}
-        {!isHome && (
-          <nav className="hidden items-center gap-1 md:flex">
-            <Link to="/chat">
-              <Button 
-                variant={location.pathname === "/chat" ? "secondary" : "ghost"} 
-                size="sm"
-                className="text-sm"
-              >
-                Chat
-              </Button>
-            </Link>
-            <Link to="/schedule">
-              <Button 
-                variant={location.pathname === "/schedule" ? "secondary" : "ghost"} 
-                size="sm"
-                className="text-sm"
-              >
-                Schedule
-              </Button>
-            </Link>
-            <Link to="/integrations">
-              <Button 
-                variant={location.pathname === "/integrations" ? "secondary" : "ghost"} 
-                size="sm"
-                className="text-sm"
-              >
-                Integrations
-              </Button>
-            </Link>
-          </nav>
-        )}
+        <nav className="flex min-w-0 flex-1 items-center justify-center gap-0.5 overflow-x-auto px-1 sm:gap-1">
+          <Link to="/chat">
+            <Button
+              variant={location.pathname === "/chat" ? "secondary" : "ghost"}
+              size="sm"
+              className="text-sm"
+            >
+              Chat
+            </Button>
+          </Link>
+          <Link to="/schedule">
+            <Button
+              variant={location.pathname === "/schedule" ? "secondary" : "ghost"}
+              size="sm"
+              className="text-sm"
+            >
+              Schedule
+            </Button>
+          </Link>
+          <Link to="/integrations">
+            <Button
+              variant={location.pathname === "/integrations" ? "secondary" : "ghost"}
+              size="sm"
+              className="text-sm"
+            >
+              Integrations
+            </Button>
+          </Link>
+        </nav>
 
         {/* User menu or sign in */}
         {loading ? (

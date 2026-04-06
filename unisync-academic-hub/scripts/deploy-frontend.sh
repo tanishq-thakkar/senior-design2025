@@ -7,7 +7,8 @@
 #   export CLOUDFRONT_DISTRIBUTION_ID=E123...
 #   ./scripts/deploy-frontend.sh
 #
-# Optional: create .env.production with VITE_API_URL, VITE_SUPABASE_* then: npm run build uses them automatically.
+# Optional: .env.production with VITE_SUPABASE_* for production build.
+# MVP: omit VITE_API_URL so the app uses http://localhost:8000 (run backend locally while testing the deployed UI).
 # Optional: put S3_BUCKET and CLOUDFRONT_DISTRIBUTION_ID in .env.deploy (see repo root).
 
 set -euo pipefail
