@@ -1,34 +1,43 @@
-// src/lib/api.ts
-import { useQuery, useMutation, UseQueryOptions, UseMutationOptions } from '@tanstack/react-query';
-import axios from 'axios';
+import {
+  useQuery,
+  useMutation,
+  UseQueryOptions,
+  UseMutationOptions,
+} from "@tanstack/react-query";
+import axios from "axios";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabaseClient";
 
-// Base URL from .env (falls back to localhost in development)
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 async function getAuthHeader(): Promise<Record<string, string>> {
   if (!isSupabaseConfigured()) return {};
-  const { data: { session } } = await getSupabase().auth.getSession();
+
+  const {
+    data: { session },
+  } = await getSupabase().auth.getSession();
+
   if (!session?.access_token) return {};
   return { Authorization: `Bearer ${session.access_token}` };
 }
 
-// Basic fetch wrapper with auth & error handling
 export async function apiFetch<T>(
   endpoint: string,
-  options: RequestInit = {},
+  options: RequestInit = {}
 ): Promise<T> {
-  const url = `${API_BASE}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+  const url = `${API_BASE}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
 
   const auth = await getAuthHeader();
-  const headers = {
-    'Content-Type': 'application/json',
-    ...auth,
-    ...options.headers,
-  };
+
+  const headers = new Headers(options.headers || {});
+  Object.entries(auth).forEach(([key, value]) => headers.set(key, value));
+
+  if (!(options.body instanceof FormData) && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   const response = await fetch(url, {
     ...options,
+    credentials: "include",
     headers,
   });
 
@@ -37,39 +46,41 @@ export async function apiFetch<T>(
     throw new Error(errorData.detail || `Request failed: ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json() as Promise<T>;
+  }
+
+  return {} as T;
 }
 
-// Axios instance (optional, but kept since you had it)
 export const api = axios.create({
   baseURL: API_BASE,
+  withCredentials: true,
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
 });
 
 api.interceptors.request.use(async (config) => {
   const auth = await getAuthHeader();
+
   if (auth.Authorization) {
-    config.headers.Authorization = auth.Authorization;
+    config.headers.set("Authorization", auth.Authorization);
   }
+
   return config;
 });
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // You can show toast here later
-    return Promise.reject(error);
-  },
+  (error) => Promise.reject(error)
 );
-
-// React Query helpers
 
 export function useApiQuery<T>(
   key: string | string[],
   endpoint: string,
-  options?: Omit<UseQueryOptions<T>, 'queryKey' | 'queryFn'>,
+  options?: Omit<UseQueryOptions<T>, "queryKey" | "queryFn">
 ) {
   return useQuery<T>({
     queryKey: Array.isArray(key) ? key : [key],
@@ -80,7 +91,7 @@ export function useApiQuery<T>(
 
 export function useApiMutation<TData, TVariables = unknown>(
   mutationFn: (variables: TVariables) => Promise<TData>,
-  options?: Omit<UseMutationOptions<TData, Error, TVariables>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<TData, Error, TVariables>, "mutationFn">
 ) {
   return useMutation({
     mutationFn,

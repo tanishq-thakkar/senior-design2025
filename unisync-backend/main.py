@@ -4,7 +4,7 @@ import io
 import secrets
 from uuid import uuid4
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 
 import requests
 from dotenv import load_dotenv
@@ -23,7 +23,6 @@ client = OpenAI()
 
 app = FastAPI(title="UniSync Chat Backend")
 
-# Local dev origins + optional comma-separated list (e.g. https://dxxx.cloudfront.net for production)
 _default_cors_origins = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
@@ -31,9 +30,9 @@ _default_cors_origins = [
     "http://127.0.0.1:5173",
 ]
 _extra_origins = [
-    o.strip()
-    for o in os.getenv("ALLOW_ORIGINS", "").split(",")
-    if o.strip()
+    origin.strip()
+    for origin in os.getenv("ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
 ]
 _cors_origins = list(dict.fromkeys(_default_cors_origins + _extra_origins))
 
@@ -44,6 +43,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # -------------------------
@@ -164,6 +164,38 @@ def get_canvas_credentials(request: Request) -> Optional[dict]:
     return canvas_session_store.get(session_id)
 
 
+def require_canvas_credentials(request: Request) -> dict:
+    creds = get_canvas_credentials(request)
+    if not creds:
+        raise HTTPException(status_code=401, detail="Canvas not connected for this session")
+    return creds
+
+
+def canvas_get(
+    creds: dict,
+    path: str,
+    params: Optional[dict] = None,
+    timeout: int = 15,
+):
+    try:
+        response = requests.get(
+            f"{creds['base_url']}{path}",
+            headers={"Authorization": f"Bearer {creds['token']}"},
+            params=params or {},
+            timeout=timeout,
+        )
+        return response
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+
+
+def safe_json(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
 def get_usage_snapshot() -> PrivacyUsageResponse:
     conversations = list(conversations_store.values())
     total_messages = sum(len(c.messages) for c in conversations)
@@ -183,29 +215,41 @@ def get_usage_snapshot() -> PrivacyUsageResponse:
             "unisync_settings",
             "token",
             "unisync_conversations",
+            "unisync_canvas_base_url",
+            "unisync_canvas_token",
         ],
         backendStores=[
             "conversation metadata",
             "message history",
             "reasoning summary metadata",
+            "canvas session memory",
         ],
         llmProvider="OpenAI",
         modelUsed="gpt-4o-mini",
         retentionNote=(
-            "Current prototype stores chat data in backend memory only while the server is running. "
-            "No database persistence is enabled yet."
+            "Current prototype stores chat data and Canvas session data in backend memory only "
+            "while the server is running. No database persistence is enabled yet."
         ),
         exportedAt=now_iso(),
     )
 
 
-def build_reasoning_summary(user_text: str, convo: Conversation) -> tuple[list[ReasoningStep], str, list[str], str]:
+def build_reasoning_summary(
+    user_text: str,
+    convo: Conversation,
+) -> tuple[list[ReasoningStep], str, list[str], str]:
     text = user_text.lower()
 
     sources_checked = ["chat_history"]
     confidence = "partial"
 
-    if any(word in text for word in ["assignment", "deadline", "canvas", "course", "class"]):
+    if any(
+        word in text
+        for word in [
+            "assignment", "deadline", "canvas", "course", "class",
+            "grade", "announcement", "schedule", "timetable", "calendar"
+        ]
+    ):
         sources_checked.append("canvas")
         confidence = "high"
 
@@ -214,29 +258,207 @@ def build_reasoning_summary(user_text: str, convo: Conversation) -> tuple[list[R
         confidence = "high"
 
     if any(word in text for word in ["calendar", "meeting", "schedule", "event"]):
-        sources_checked.append("calendar")
+        if "calendar" not in sources_checked:
+            sources_checked.append("calendar")
         confidence = "high"
 
     steps = [
         ReasoningStep(
             label="Interpret request",
-            detail="Identified the user's intent from the latest message."
+            detail="Identified the user's intent from the latest message.",
         ),
         ReasoningStep(
             label="Check context",
-            detail=f"Considered {len(convo.messages)} messages in the current conversation."
+            detail=f"Considered {len(convo.messages)} messages in the current conversation.",
         ),
         ReasoningStep(
             label="Select sources",
-            detail=f"Prepared likely data sources: {', '.join(sources_checked)}."
+            detail=f"Prepared likely data sources: {', '.join(sources_checked)}.",
         ),
         ReasoningStep(
             label="Generate answer",
-            detail="Produced a concise response tailored for a university student workflow."
+            detail="Produced a concise response tailored for a university student workflow.",
         ),
     ]
 
     return steps, confidence, sources_checked, now_iso()
+
+
+def summarize_courses_for_prompt(courses: list[dict]) -> list[dict]:
+    result = []
+    for course in courses[:20]:
+        result.append({
+            "id": course.get("id"),
+            "name": course.get("name"),
+            "course_code": course.get("course_code"),
+            "workflow_state": course.get("workflow_state"),
+            "start_at": course.get("start_at"),
+            "end_at": course.get("end_at"),
+            "current_grade": course.get("enrollments", [{}])[0].get("computed_current_grade")
+            if course.get("enrollments") else None,
+            "current_score": course.get("enrollments", [{}])[0].get("computed_current_score")
+            if course.get("enrollments") else None,
+            "final_grade": course.get("enrollments", [{}])[0].get("computed_final_grade")
+            if course.get("enrollments") else None,
+            "final_score": course.get("enrollments", [{}])[0].get("computed_final_score")
+            if course.get("enrollments") else None,
+        })
+    return result
+
+
+def summarize_todos_for_prompt(todos: list[dict]) -> list[dict]:
+    result = []
+    for item in todos[:25]:
+        assignment = item.get("assignment") or {}
+        result.append({
+            "course_name": item.get("course_name"),
+            "assignment_name": assignment.get("name") or item.get("assignment_name"),
+            "points_possible": assignment.get("points_possible"),
+            "due_at": assignment.get("due_at"),
+            "html_url": assignment.get("html_url"),
+            "type": item.get("type"),
+        })
+    return result
+
+
+def summarize_announcements_for_prompt(announcements: list[dict]) -> list[dict]:
+    result = []
+    for ann in announcements[:20]:
+        result.append({
+            "title": ann.get("title"),
+            "posted_at": ann.get("posted_at"),
+            "context_name": ann.get("context_name"),
+            "message": (ann.get("message") or "")[:500],
+        })
+    return result
+
+
+def summarize_calendar_events_for_prompt(events: list[dict]) -> list[dict]:
+    result = []
+    for event in events[:25]:
+        result.append({
+            "title": event.get("title"),
+            "description": (event.get("description") or "")[:300],
+            "start_at": event.get("start_at"),
+            "end_at": event.get("end_at"),
+            "location_name": event.get("location_name"),
+            "context_code": event.get("context_code"),
+            "type": event.get("type"),
+        })
+    return result
+
+
+def get_canvas_courses_data(creds: dict, include_grades: bool = False) -> list[dict]:
+    params = {"enrollment_state": "active"}
+    if include_grades:
+        params["include[]"] = "total_scores"
+
+    response = canvas_get(creds, "/api/v1/courses", params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch courses")
+
+    return safe_json(response) or []
+
+
+def get_canvas_assignments_data(creds: dict) -> list[dict]:
+    response = canvas_get(creds, "/api/v1/users/self/todo")
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch assignments")
+
+    return safe_json(response) or []
+
+
+def get_canvas_announcements_data(creds: dict) -> list[dict]:
+    courses = get_canvas_courses_data(creds, include_grades=False)
+    context_codes = [f"course_{course['id']}" for course in courses if course.get("id")]
+
+    if not context_codes:
+        return []
+
+    response = canvas_get(
+        creds,
+        "/api/v1/announcements",
+        params={
+            "context_codes[]": context_codes,
+            "active_only": True,
+            "latest_only": False,
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch announcements")
+
+    return safe_json(response) or []
+
+
+def get_canvas_calendar_events_data(creds: dict) -> list[dict]:
+    response = canvas_get(
+        creds,
+        "/api/v1/calendar_events",
+        params={
+            "type": "event",
+            "all_events": True,
+            "per_page": 50,
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch calendar events")
+
+    return safe_json(response) or []
+
+
+def get_canvas_dashboard_bundle(creds: dict) -> dict:
+    courses_with_grades = get_canvas_courses_data(creds, include_grades=True)
+    assignments = get_canvas_assignments_data(creds)
+    announcements = get_canvas_announcements_data(creds)
+    events = get_canvas_calendar_events_data(creds)
+
+    return {
+        "courses": courses_with_grades,
+        "assignments": assignments,
+        "announcements": announcements,
+        "calendar_events": events,
+    }
+
+
+def build_canvas_context_for_chat(request_text: str, creds: Optional[dict]) -> tuple[str, list[str], str]:
+    if not creds:
+        return "", ["chat_history"], "partial"
+
+    lower_text = request_text.lower()
+    wants_canvas = any(
+        token in lower_text
+        for token in [
+            "canvas", "course", "courses", "class", "classes", "assignment",
+            "assignments", "deadline", "deadlines", "due", "grade", "grades",
+            "announcement", "announcements", "schedule", "timetable", "calendar",
+            "event", "events", "quiz", "exam", "homework",
+        ]
+    )
+
+    if not wants_canvas:
+        return "", ["chat_history"], "partial"
+
+    bundle = get_canvas_dashboard_bundle(creds)
+
+    context_payload = {
+        "connected_user": {
+            "name": creds.get("user_name"),
+            "id": creds.get("user_id"),
+        },
+        "courses": summarize_courses_for_prompt(bundle["courses"]),
+        "assignments": summarize_todos_for_prompt(bundle["assignments"]),
+        "announcements": summarize_announcements_for_prompt(bundle["announcements"]),
+        "calendar_events": summarize_calendar_events_for_prompt(bundle["calendar_events"]),
+        "generated_at": now_iso(),
+    }
+
+    context_text = (
+        "Here is live Canvas context for the currently connected user. "
+        "Use it to answer accurately. If the answer is not present, say so clearly.\n\n"
+        f"{context_payload}"
+    )
+
+    return context_text, ["chat_history", "canvas"], "high"
 
 
 # -------------------------
@@ -258,54 +480,46 @@ def connect_canvas(body: CanvasConnectRequest, response: Response):
     access_token = body.accessToken.strip()
 
     if not canvas_base_url or not access_token:
-        raise HTTPException(status_code=400, detail="Canvas base URL and access token are required")
-
-    try:
-        verify_response = requests.get(
-            f"{canvas_base_url}/api/v1/users/self",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
+        raise HTTPException(
+            status_code=400,
+            detail="Canvas base URL and access token are required",
         )
 
-        if verify_response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid Canvas credentials")
+    verify_response = canvas_get(
+        {"base_url": canvas_base_url, "token": access_token},
+        "/api/v1/users/self",
+    )
 
-        user_data = verify_response.json()
+    if verify_response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Canvas credentials")
 
-        old_session_id = response.headers.get("set-cookie")
-        _ = old_session_id  # no-op, keeps linter quiet if needed
+    user_data = verify_response.json()
+    session_id = secrets.token_urlsafe(32)
 
-        session_id = secrets.token_urlsafe(32)
+    canvas_session_store[session_id] = {
+        "base_url": canvas_base_url,
+        "token": access_token,
+        "user_name": user_data.get("name"),
+        "user_id": user_data.get("id"),
+        "connected_at": now_iso(),
+    }
 
-        canvas_session_store[session_id] = {
-            "base_url": canvas_base_url,
-            "token": access_token,
-            "user_name": user_data.get("name"),
-            "user_id": user_data.get("id"),
-            "connected_at": now_iso(),
-        }
+    response.set_cookie(
+        key=CANVAS_SESSION_COOKIE,
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 8,
+    )
 
-        response.set_cookie(
-            key=CANVAS_SESSION_COOKIE,
-            value=session_id,
-            httponly=True,
-            samesite="lax",
-            secure=False,  # change to True in production with HTTPS
-            max_age=60 * 60 * 8,
-        )
-
-        return {
-            "success": True,
-            "user": {
-                "name": user_data.get("name"),
-                "id": user_data.get("id"),
-            },
-        }
-
-    except HTTPException:
-        raise
-    except requests.RequestException:
-        raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+    return {
+        "success": True,
+        "user": {
+            "name": user_data.get("name"),
+            "id": user_data.get("id"),
+        },
+    }
 
 
 @app.get("/canvas/status", response_model=CanvasStatusResponse)
@@ -326,31 +540,38 @@ def canvas_status(request: Request):
 
 @app.get("/canvas/courses")
 def get_canvas_courses(request: Request):
-    creds = get_canvas_credentials(request)
+    creds = require_canvas_credentials(request)
+    return get_canvas_courses_data(creds, include_grades=False)
 
-    if not creds:
-        raise HTTPException(status_code=401, detail="Canvas not connected for this session")
 
-    try:
-        courses_response = requests.get(
-            f"{creds['base_url']}/api/v1/courses",
-            headers={"Authorization": f"Bearer {creds['token']}"},
-            params={"enrollment_state": "active"},
-            timeout=10,
-        )
+@app.get("/canvas/assignments")
+def get_canvas_assignments(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_assignments_data(creds)
 
-        if courses_response.status_code != 200:
-            raise HTTPException(
-                status_code=courses_response.status_code,
-                detail="Failed to fetch courses"
-            )
 
-        return courses_response.json()
+@app.get("/canvas/announcements")
+def get_canvas_announcements(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_announcements_data(creds)
 
-    except HTTPException:
-        raise
-    except requests.RequestException:
-        raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+
+@app.get("/canvas/grades")
+def get_canvas_grades(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_courses_data(creds, include_grades=True)
+
+
+@app.get("/canvas/calendar")
+def get_canvas_calendar(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_calendar_events_data(creds)
+
+
+@app.get("/canvas/dashboard")
+def get_canvas_dashboard(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_dashboard_bundle(creds)
 
 
 @app.post("/canvas/disconnect")
@@ -364,6 +585,10 @@ def disconnect_canvas(request: Request, response: Response):
 
     return {"success": True}
 
+
+# -------------------------
+# Chat Routes
+# -------------------------
 
 @app.get("/chat/conversations", response_model=list[Conversation])
 def get_conversations():
@@ -405,7 +630,7 @@ def delete_conversation(convo_id: str):
 
 
 @app.post("/chat/conversations/{convo_id}/messages", response_model=SendMessageResponse)
-def send_message(convo_id: str, body: SendMessageRequest):
+def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     convo = conversations_store.get(convo_id)
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -427,24 +652,39 @@ def send_message(convo_id: str, body: SendMessageRequest):
         convo,
     )
 
+    canvas_creds = get_canvas_credentials(request)
+    canvas_context_text, canvas_sources, canvas_confidence = build_canvas_context_for_chat(
+        body.content,
+        canvas_creds,
+    )
+
+    if "canvas" in canvas_sources and "canvas" not in sources_checked:
+        sources_checked.append("canvas")
+    if canvas_confidence == "high":
+        confidence = "high"
+
     try:
+        system_message = (
+            "You are UniSync, a helpful academic assistant for university students. "
+            "Be clear, concise, practical, and friendly. "
+            "Do not reveal private chain-of-thought. "
+            "Give a direct answer. "
+            "If Canvas context is provided, use it as the source of truth for the connected user. "
+            "Do not invent grades, assignments, dates, or announcements that are not present."
+        )
+
+        messages = [{"role": "system", "content": system_message}]
+
+        if canvas_context_text:
+            messages.append({"role": "system", "content": canvas_context_text})
+
+        messages.extend(
+            [{"role": msg.role, "content": msg.content} for msg in convo.messages]
+        )
+
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are UniSync, a helpful academic assistant for university students. "
-                        "Be clear, concise, practical, and friendly. "
-                        "Do not reveal private chain-of-thought. "
-                        "Give a direct answer."
-                    ),
-                },
-                *[
-                    {"role": msg.role, "content": msg.content}
-                    for msg in convo.messages
-                ],
-            ],
+            messages=messages,
         )
 
         assistant_text = (completion.choices[0].message.content or "").strip()
@@ -477,6 +717,10 @@ def send_message(convo_id: str, body: SendMessageRequest):
     )
 
 
+# -------------------------
+# Privacy Routes
+# -------------------------
+
 @app.get("/privacy/usage", response_model=PrivacyUsageResponse)
 def privacy_usage():
     return get_usage_snapshot()
@@ -489,7 +733,10 @@ def privacy_export():
 
     return PrivacyExportResponse(
         exportedAt=now_iso(),
-        settingsHint="Frontend local settings are stored in browser localStorage and should be merged client-side into the final export file.",
+        settingsHint=(
+            "Frontend local settings are stored in browser localStorage and should be "
+            "merged client-side into the final export file."
+        ),
         usage=get_usage_snapshot(),
         conversations=conversations,
     )
@@ -501,9 +748,15 @@ def delete_all_data():
     canvas_session_store.clear()
     return {
         "success": True,
-        "message": "All backend UniSync conversation data has been deleted."
+        "message": "All backend UniSync conversation and Canvas session data has been deleted.",
     }
 
+
+
+
+# -------------------------
+# Voice Routes
+# -------------------------
 
 @app.post("/voice/transcribe", response_model=TranscriptionResponse)
 async def transcribe_audio(
@@ -571,3 +824,4 @@ def speak_text(body: SpeechRequest):
     except Exception as e:
         print("OPENAI TTS ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
+

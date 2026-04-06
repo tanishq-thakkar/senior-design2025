@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
 import type { Integration } from "@/types/chat";
 import { formatDistanceToNow } from "date-fns";
 
-const API_BASE = "http://localhost:8000"
+const API_BASE = "http://localhost:8000";
+const CANVAS_BASE_URL_KEY = "unisync_canvas_base_url";
+const CANVAS_TOKEN_KEY = "unisync_canvas_token";
 
 const initialIntegrations: Integration[] = [
   {
@@ -260,10 +262,6 @@ export default function Integrations() {
     }
   };
 
-  useEffect(() => {
-    fetchCanvasStatus();
-  }, []);
-
   const handleCanvasConnect = async () => {
     setCanvasError(null);
 
@@ -275,6 +273,9 @@ export default function Integrations() {
     try {
       setLoadingCanvas(true);
 
+      const cleanedBaseUrl = canvasBaseUrl.trim().replace(/\/+$/, "");
+      const cleanedToken = accessToken.trim();
+
       const res = await fetch(`${API_BASE}/canvas/connect`, {
         method: "POST",
         headers: {
@@ -282,8 +283,8 @@ export default function Integrations() {
         },
         credentials: "include",
         body: JSON.stringify({
-          canvasBaseUrl: canvasBaseUrl.trim(),
-          accessToken: accessToken.trim(),
+          canvasBaseUrl: cleanedBaseUrl,
+          accessToken: cleanedToken,
         }),
       });
 
@@ -292,6 +293,9 @@ export default function Integrations() {
       if (!res.ok) {
         throw new Error(data.detail || "Failed to connect Canvas.");
       }
+
+      localStorage.setItem(CANVAS_BASE_URL_KEY, cleanedBaseUrl);
+      localStorage.setItem(CANVAS_TOKEN_KEY, cleanedToken);
 
       updateCanvasIntegration(true);
       setCanvasUserName(data.user?.name ?? null);
@@ -323,6 +327,9 @@ export default function Integrations() {
         throw new Error(data.detail || "Failed to disconnect Canvas.");
       }
 
+      localStorage.removeItem(CANVAS_BASE_URL_KEY);
+      localStorage.removeItem(CANVAS_TOKEN_KEY);
+
       updateCanvasIntegration(false);
       setCanvasUserName(null);
       setAccessToken("");
@@ -347,6 +354,64 @@ export default function Integrations() {
       setLoadingCanvas(false);
     }
   };
+
+  useEffect(() => {
+    const savedBaseUrl = localStorage.getItem(CANVAS_BASE_URL_KEY) || "";
+    const savedToken = localStorage.getItem(CANVAS_TOKEN_KEY) || "";
+
+    if (savedBaseUrl) {
+      setCanvasBaseUrl(savedBaseUrl);
+    }
+
+    const initializeCanvas = async () => {
+      try {
+        const statusRes = await fetch(`${API_BASE}/canvas/status`, {
+          credentials: "include",
+        });
+
+        const statusData: CanvasStatusResponse = await statusRes.json();
+
+        if (statusData.connected) {
+          updateCanvasIntegration(true);
+          setCanvasUserName(statusData.user?.name ?? null);
+          return;
+        }
+
+        if (savedBaseUrl && savedToken) {
+          const reconnectRes = await fetch(`${API_BASE}/canvas/connect`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              canvasBaseUrl: savedBaseUrl.replace(/\/+$/, ""),
+              accessToken: savedToken,
+            }),
+          });
+
+          const reconnectData = await reconnectRes.json();
+
+          if (reconnectRes.ok) {
+            updateCanvasIntegration(true);
+            setCanvasUserName(reconnectData.user?.name ?? null);
+          } else {
+            updateCanvasIntegration(false);
+            setCanvasUserName(null);
+          }
+        } else {
+          updateCanvasIntegration(false);
+          setCanvasUserName(null);
+        }
+      } catch (error) {
+        console.error("Canvas init error:", error);
+        updateCanvasIntegration(false);
+        setCanvasUserName(null);
+      }
+    };
+
+    initializeCanvas();
+  }, []);
 
   const connectedCount = integrations.filter(
     (integration) => integration.status === "connected"
