@@ -84,10 +84,9 @@ export default function Auth() {
           <CardHeader>
             <CardTitle>Configure Supabase</CardTitle>
             <CardDescription>
-              Add <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_URL</code> and{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_ANON_KEY</code> to{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">.env.local</code> in this app (see{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">.env.example</code>), then restart the dev server.
+              Add               <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_URL</code> and{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">VITE_SUPABASE_ANON_KEY</code> in{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">.env.local</code> at the project root, then restart the dev server.
             </CardDescription>
           </CardHeader>
           <CardFooter>
