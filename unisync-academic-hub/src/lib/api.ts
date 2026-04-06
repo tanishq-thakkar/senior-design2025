@@ -7,7 +7,8 @@ import {
 import axios from "axios";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabaseClient";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+/** Backend API origin. MVP: defaults to local FastAPI; set VITE_API_URL only if you host the API elsewhere. */
+export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 async function getAuthHeader(): Promise<Record<string, string>> {
   if (!isSupabaseConfigured()) return {};
