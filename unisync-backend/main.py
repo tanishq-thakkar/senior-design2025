@@ -23,14 +23,23 @@ client = OpenAI()
 
 app = FastAPI(title="UniSync Chat Backend")
 
+# Local dev origins + optional comma-separated list (e.g. https://dxxx.cloudfront.net for production)
+_default_cors_origins = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_extra_origins = [
+    o.strip()
+    for o in os.getenv("ALLOW_ORIGINS", "").split(",")
+    if o.strip()
+]
+_cors_origins = list(dict.fromkeys(_default_cors_origins + _extra_origins))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

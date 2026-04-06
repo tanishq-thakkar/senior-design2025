@@ -1,0 +1,40 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudFormationStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "S3ForStaticSite",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudFrontCDN",
+      "Effect": "Allow",
+      "Action": "cloudfront:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ServiceLinkedRoleForCloudFront",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/*"
+    },
+    {
+      "Sid": "ReadAccountForConsole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:ListRoles",
+        "iam:GetRole",
+        "iam:ListUsers",
+        "iam:GetUser"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

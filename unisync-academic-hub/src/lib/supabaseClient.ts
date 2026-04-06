@@ -14,7 +14,7 @@ export function getSupabase(): SupabaseClient {
 
   if (!url || !anonKey) {
     throw new Error(
-      "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Add them to your environment (see .env.example).",
+      "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Set them in your environment (e.g. .env.local).",
     );
   }
 
