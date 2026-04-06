@@ -433,6 +433,134 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
     }
 
 
+
+
+
+# -------------------------
+# Routes
+# -------------------------
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# -------------------------
+# Canvas Routes
+# -------------------------
+
+@app.post("/canvas/connect")
+def connect_canvas(body: CanvasConnectRequest, response: Response):
+    canvas_base_url = body.canvasBaseUrl.strip().rstrip("/")
+    access_token = body.accessToken.strip()
+
+    if not canvas_base_url or not access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Canvas base URL and access token are required",
+        )
+
+    verify_response = canvas_get(
+        {"base_url": canvas_base_url, "token": access_token},
+        "/api/v1/users/self",
+    )
+
+    if verify_response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Canvas credentials")
+
+    user_data = verify_response.json()
+    session_id = secrets.token_urlsafe(32)
+
+    canvas_session_store[session_id] = {
+        "base_url": canvas_base_url,
+        "token": access_token,
+        "user_name": user_data.get("name"),
+        "user_id": user_data.get("id"),
+        "connected_at": now_iso(),
+    }
+
+    response.set_cookie(
+        key=CANVAS_SESSION_COOKIE,
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 8,
+    )
+
+    return {
+        "success": True,
+        "user": {
+            "name": user_data.get("name"),
+            "id": user_data.get("id"),
+        },
+    }
+
+
+@app.get("/canvas/status", response_model=CanvasStatusResponse)
+def canvas_status(request: Request):
+    creds = get_canvas_credentials(request)
+
+    if not creds:
+        return CanvasStatusResponse(connected=False)
+
+    return CanvasStatusResponse(
+        connected=True,
+        user={
+            "name": creds.get("user_name"),
+            "id": creds.get("user_id"),
+        },
+    )
+
+
+@app.get("/canvas/courses")
+def get_canvas_courses(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_courses_data(creds, include_grades=False)
+
+
+@app.get("/canvas/assignments")
+def get_canvas_assignments(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_assignments_data(creds)
+
+
+@app.get("/canvas/announcements")
+def get_canvas_announcements(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_announcements_data(creds)
+
+
+@app.get("/canvas/grades")
+def get_canvas_grades(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_courses_data(creds, include_grades=True)
+
+
+@app.get("/canvas/calendar")
+def get_canvas_calendar(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_calendar_events_data(creds)
+
+
+@app.get("/canvas/dashboard")
+def get_canvas_dashboard(request: Request):
+    creds = require_canvas_credentials(request)
+    return get_canvas_dashboard_bundle(creds)
+
+
+@app.post("/canvas/disconnect")
+def disconnect_canvas(request: Request, response: Response):
+    session_id = get_canvas_session_id(request)
+
+    if session_id and session_id in canvas_session_store:
+        del canvas_session_store[session_id]
+
+    response.delete_cookie(CANVAS_SESSION_COOKIE)
+
+    return {"success": True}
+
+
 # -------------------------
 # Outlook / Graph Helpers
 # -------------------------
@@ -440,8 +568,101 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
 def get_outlook_me(access_token: str) -> dict:
     response = graph_get(access_token, "/me")
     if response.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid Outlook token")
+        detail = safe_json(response) or response.text
+        raise HTTPException(status_code=response.status_code, detail=f"Invalid Outlook token: {detail}")
     return safe_json(response) or {}
+
+
+def get_outlook_messages(
+    access_token: str,
+    top: int = 10,
+    unread_only: bool = False,
+) -> list[dict]:
+    params = {
+        "$top": max(1, min(top, 25)),
+        "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead,webLink",
+        "$orderby": "receivedDateTime DESC",
+    }
+
+    if unread_only:
+        params["$filter"] = "isRead eq false"
+
+    response = graph_get(access_token, "/me/messages", params=params)
+
+    if response.status_code != 200:
+        detail = safe_json(response) or response.text
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Failed to fetch Outlook messages: {detail}",
+        )
+
+    data = safe_json(response) or {}
+    items = data.get("value", [])
+
+    normalized = []
+    for item in items:
+        sender = item.get("from", {}) or {}
+        email_addr = sender.get("emailAddress", {}) or {}
+
+        normalized.append({
+            "id": item.get("id"),
+            "subject": item.get("subject"),
+            "from_name": email_addr.get("name"),
+            "from_email": email_addr.get("address"),
+            "received_at": item.get("receivedDateTime"),
+            "preview": item.get("bodyPreview"),
+            "is_read": item.get("isRead"),
+            "web_link": item.get("webLink"),
+        })
+
+    return normalized
+
+
+def read_outlook_message(
+    access_token: str,
+    message_id: str,
+) -> dict:
+    params = {
+        "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,isRead,webLink",
+    }
+
+    response = graph_get(access_token, f"/me/messages/{message_id}", params=params)
+
+    if response.status_code != 200:
+        detail = safe_json(response) or response.text
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Failed to read Outlook message: {detail}",
+        )
+
+    item = safe_json(response) or {}
+
+    sender = item.get("from", {}) or {}
+    sender_email = sender.get("emailAddress", {}) or {}
+
+    def normalize_recipients(recipients: list[dict] | None) -> list[dict]:
+        result = []
+        for rec in recipients or []:
+            email_addr = (rec or {}).get("emailAddress", {}) or {}
+            result.append({
+                "name": email_addr.get("name"),
+                "email": email_addr.get("address"),
+            })
+        return result
+
+    return {
+        "id": item.get("id"),
+        "subject": item.get("subject"),
+        "from_name": sender_email.get("name"),
+        "from_email": sender_email.get("address"),
+        "to": normalize_recipients(item.get("toRecipients")),
+        "cc": normalize_recipients(item.get("ccRecipients")),
+        "received_at": item.get("receivedDateTime"),
+        "body_content_type": (item.get("body") or {}).get("contentType"),
+        "body": (item.get("body") or {}).get("content"),
+        "is_read": item.get("isRead"),
+        "web_link": item.get("webLink"),
+    }
 
 
 def send_outlook_email_via_graph(
@@ -595,6 +816,44 @@ def get_tools_schema():
         {
             "type": "function",
             "function": {
+                "name": "get_outlook_messages",
+                "description": "Get recent emails from the connected Outlook account.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "top": {
+                            "type": "integer",
+                            "description": "How many recent emails to fetch."
+                        },
+                        "unread_only": {
+                            "type": "boolean",
+                            "description": "Whether to fetch only unread emails."
+                        }
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_outlook_message",
+                "description": "Read a specific Outlook email by message id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": {
+                            "type": "string",
+                            "description": "The Outlook message id."
+                        }
+                    },
+                    "required": ["message_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "send_outlook_email",
                 "description": "Send an email using the connected Outlook account.",
                 "parameters": {
@@ -638,7 +897,12 @@ def execute_tool(tool_name: str, args: dict, request: Request):
     else:
         canvas_creds = None
 
-    if tool_name in ("get_outlook_profile", "send_outlook_email"):
+    if tool_name in (
+        "get_outlook_profile",
+        "get_outlook_messages",
+        "read_outlook_message",
+        "send_outlook_email",
+    ):
         outlook_creds = require_outlook_credentials(request)
     else:
         outlook_creds = None
@@ -668,6 +932,19 @@ def execute_tool(tool_name: str, args: dict, request: Request):
     elif tool_name == "get_outlook_profile":
         return get_outlook_me(outlook_creds["token"])
 
+    elif tool_name == "get_outlook_messages":
+        return get_outlook_messages(
+            access_token=outlook_creds["token"],
+            top=args.get("top", 10),
+            unread_only=args.get("unread_only", False),
+        )
+
+    elif tool_name == "read_outlook_message":
+        return read_outlook_message(
+            access_token=outlook_creds["token"],
+            message_id=args["message_id"],
+        )
+
     elif tool_name == "send_outlook_email":
         return send_outlook_email_via_graph(
             access_token=outlook_creds["token"],
@@ -687,10 +964,11 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
     system_message = (
         "You are UniSync, a helpful academic assistant for university students. "
         "Be clear, concise, practical, and friendly. "
-        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, calendar questions, or sending emails. "
+        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, calendar questions, or Outlook email tasks. "
         "If Canvas is not connected and the user asks for Canvas-specific information, clearly tell them to connect Canvas. "
-        "If Outlook is not connected and the user asks to send email, clearly tell them to connect Outlook. "
-        "Do not invent grades, assignments, deadlines, announcements, or email send results. "
+        "If Outlook is not connected and the user asks to read emails, check recent emails, or send email, clearly tell them to connect Outlook. "
+        "Use Outlook tools for both reading and sending email. "
+        "Do not invent grades, assignments, deadlines, announcements, emails, or email send results. "
         "Before sending email, ensure you have enough details like recipient, subject, and body from the conversation."
     )
 
@@ -757,131 +1035,6 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
 
 
 # -------------------------
-# Routes
-# -------------------------
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-# -------------------------
-# Canvas Routes
-# -------------------------
-
-@app.post("/canvas/connect")
-def connect_canvas(body: CanvasConnectRequest, response: Response):
-    canvas_base_url = body.canvasBaseUrl.strip().rstrip("/")
-    access_token = body.accessToken.strip()
-
-    if not canvas_base_url or not access_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Canvas base URL and access token are required",
-        )
-
-    verify_response = canvas_get(
-        {"base_url": canvas_base_url, "token": access_token},
-        "/api/v1/users/self",
-    )
-
-    if verify_response.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid Canvas credentials")
-
-    user_data = verify_response.json()
-    session_id = secrets.token_urlsafe(32)
-
-    canvas_session_store[session_id] = {
-        "base_url": canvas_base_url,
-        "token": access_token,
-        "user_name": user_data.get("name"),
-        "user_id": user_data.get("id"),
-        "connected_at": now_iso(),
-    }
-
-    response.set_cookie(
-        key=CANVAS_SESSION_COOKIE,
-        value=session_id,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        max_age=60 * 60 * 8,
-    )
-
-    return {
-        "success": True,
-        "user": {
-            "name": user_data.get("name"),
-            "id": user_data.get("id"),
-        },
-    }
-
-
-@app.get("/canvas/status", response_model=CanvasStatusResponse)
-def canvas_status(request: Request):
-    creds = get_canvas_credentials(request)
-
-    if not creds:
-        return CanvasStatusResponse(connected=False)
-
-    return CanvasStatusResponse(
-        connected=True,
-        user={
-            "name": creds.get("user_name"),
-            "id": creds.get("user_id"),
-        },
-    )
-
-
-@app.get("/canvas/courses")
-def get_canvas_courses(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_courses_data(creds, include_grades=False)
-
-
-@app.get("/canvas/assignments")
-def get_canvas_assignments(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_assignments_data(creds)
-
-
-@app.get("/canvas/announcements")
-def get_canvas_announcements(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_announcements_data(creds)
-
-
-@app.get("/canvas/grades")
-def get_canvas_grades(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_courses_data(creds, include_grades=True)
-
-
-@app.get("/canvas/calendar")
-def get_canvas_calendar(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_calendar_events_data(creds)
-
-
-@app.get("/canvas/dashboard")
-def get_canvas_dashboard(request: Request):
-    creds = require_canvas_credentials(request)
-    return get_canvas_dashboard_bundle(creds)
-
-
-@app.post("/canvas/disconnect")
-def disconnect_canvas(request: Request, response: Response):
-    session_id = get_canvas_session_id(request)
-
-    if session_id and session_id in canvas_session_store:
-        del canvas_session_store[session_id]
-
-    response.delete_cookie(CANVAS_SESSION_COOKIE)
-
-    return {"success": True}
-
-
-# -------------------------
 # Outlook Routes
 # -------------------------
 
@@ -939,6 +1092,29 @@ def outlook_status(request: Request):
     )
 
 
+@app.get("/outlook/messages")
+def get_outlook_messages_route(
+    request: Request,
+    top: int = 10,
+    unread_only: bool = False,
+):
+    creds = require_outlook_credentials(request)
+    return get_outlook_messages(
+        access_token=creds["token"],
+        top=top,
+        unread_only=unread_only,
+    )
+
+
+@app.get("/outlook/messages/{message_id}")
+def read_outlook_message_route(request: Request, message_id: str):
+    creds = require_outlook_credentials(request)
+    return read_outlook_message(
+        access_token=creds["token"],
+        message_id=message_id,
+    )
+
+
 @app.post("/outlook/send")
 def send_outlook_direct(request: Request, payload: dict):
     creds = require_outlook_credentials(request)
@@ -974,6 +1150,7 @@ def disconnect_outlook(request: Request, response: Response):
     response.delete_cookie(OUTLOOK_SESSION_COOKIE)
 
     return {"success": True}
+
 
 
 # -------------------------
