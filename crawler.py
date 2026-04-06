@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urlparse
 from collections import deque
 
 START_URL = "https://www.uc.edu/"
-MAX_PAGES = 1000
+MAX_PAGES = 999
 CONCURRENT_REQUESTS = 10
 
 visited = set()

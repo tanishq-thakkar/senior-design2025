@@ -2,6 +2,7 @@ import os
 import tempfile
 import io
 import secrets
+import json
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Literal, Optional, Any
@@ -43,8 +44,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
 
 # -------------------------
 # Models
@@ -133,7 +132,6 @@ class CanvasStatusResponse(BaseModel):
 
 conversations_store: dict[str, Conversation] = {}
 canvas_session_store: dict[str, dict] = {}
-
 
 # -------------------------
 # Helpers
@@ -284,6 +282,10 @@ def build_reasoning_summary(
     return steps, confidence, sources_checked, now_iso()
 
 
+# -------------------------
+# Canvas Data Helpers
+# -------------------------
+
 def summarize_courses_for_prompt(courses: list[dict]) -> list[dict]:
     result = []
     for course in courses[:20]:
@@ -420,45 +422,199 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
     }
 
 
-def build_canvas_context_for_chat(request_text: str, creds: Optional[dict]) -> tuple[str, list[str], str]:
-    if not creds:
-        return "", ["chat_history"], "partial"
+# -------------------------
+# Tool Calling
+# -------------------------
 
-    lower_text = request_text.lower()
-    wants_canvas = any(
-        token in lower_text
-        for token in [
-            "canvas", "course", "courses", "class", "classes", "assignment",
-            "assignments", "deadline", "deadlines", "due", "grade", "grades",
-            "announcement", "announcements", "schedule", "timetable", "calendar",
-            "event", "events", "quiz", "exam", "homework",
-        ]
-    )
-
-    if not wants_canvas:
-        return "", ["chat_history"], "partial"
-
-    bundle = get_canvas_dashboard_bundle(creds)
-
-    context_payload = {
-        "connected_user": {
-            "name": creds.get("user_name"),
-            "id": creds.get("user_id"),
+def get_tools_schema():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_courses",
+                "description": "Get the user's active Canvas courses.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "include_grades": {
+                            "type": "boolean",
+                            "description": "Whether to include course grade info."
+                        }
+                    },
+                    "required": []
+                }
+            }
         },
-        "courses": summarize_courses_for_prompt(bundle["courses"]),
-        "assignments": summarize_todos_for_prompt(bundle["assignments"]),
-        "announcements": summarize_announcements_for_prompt(bundle["announcements"]),
-        "calendar_events": summarize_calendar_events_for_prompt(bundle["calendar_events"]),
-        "generated_at": now_iso(),
-    }
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_assignments",
+                "description": "Get the user's upcoming Canvas assignments / todo items.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_announcements",
+                "description": "Get recent Canvas announcements for the user's courses.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_grades",
+                "description": "Get the user's Canvas courses including grades.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_calendar",
+                "description": "Get the user's Canvas calendar events.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_canvas_dashboard",
+                "description": "Get all major Canvas dashboard data including courses, assignments, announcements, and calendar events.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_privacy_usage",
+                "description": "Get current local usage and storage summary for the UniSync backend.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        }
+    ]
 
-    context_text = (
-        "Here is live Canvas context for the currently connected user. "
-        "Use it to answer accurately. If the answer is not present, say so clearly.\n\n"
-        f"{context_payload}"
+
+def execute_tool(tool_name: str, args: dict, request: Request):
+    if tool_name.startswith("get_canvas"):
+        creds = require_canvas_credentials(request)
+    else:
+        creds = None
+
+    if tool_name == "get_canvas_courses":
+        include_grades = args.get("include_grades", False)
+        return get_canvas_courses_data(creds, include_grades=include_grades)
+
+    elif tool_name == "get_canvas_assignments":
+        return get_canvas_assignments_data(creds)
+
+    elif tool_name == "get_canvas_announcements":
+        return get_canvas_announcements_data(creds)
+
+    elif tool_name == "get_canvas_grades":
+        return get_canvas_courses_data(creds, include_grades=True)
+
+    elif tool_name == "get_canvas_calendar":
+        return get_canvas_calendar_events_data(creds)
+
+    elif tool_name == "get_canvas_dashboard":
+        return get_canvas_dashboard_bundle(creds)
+
+    elif tool_name == "get_privacy_usage":
+        return get_usage_snapshot().dict()
+
+    else:
+        raise ValueError(f"Unknown tool: {tool_name}")
+
+
+def run_agent_with_tools(convo: Conversation, request: Request) -> str:
+    system_message = (
+        "You are UniSync, a helpful academic assistant for university students. "
+        "Be clear, concise, practical, and friendly. "
+        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, or calendar questions. "
+        "If Canvas is not connected and the user asks for Canvas-specific information, clearly tell them to connect Canvas. "
+        "Do not invent grades, assignments, deadlines, or announcements."
     )
 
-    return context_text, ["chat_history", "canvas"], "high"
+    messages = [{"role": "system", "content": system_message}]
+    messages.extend(
+        [{"role": msg.role, "content": msg.content} for msg in convo.messages]
+    )
+
+    tools = get_tools_schema()
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+    )
+
+    assistant_message = response.choices[0].message
+
+    if not assistant_message.tool_calls:
+        return (assistant_message.content or "").strip() or "Sorry, I could not generate a response."
+
+    messages.append({
+        "role": "assistant",
+        "content": assistant_message.content or "",
+        "tool_calls": [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in assistant_message.tool_calls
+        ],
+    })
+
+    for tool_call in assistant_message.tool_calls:
+        tool_name = tool_call.function.name
+        try:
+            args = json.loads(tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            args = {}
+
+        try:
+            result = execute_tool(tool_name, args, request)
+            tool_result = json.dumps(result, default=str)
+        except Exception as e:
+            tool_result = json.dumps({"error": str(e)})
+
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": tool_result,
+        })
+
+    final_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+    )
+
+    return (final_response.choices[0].message.content or "").strip() or "Sorry, I could not generate a response."
 
 
 # -------------------------
@@ -652,45 +808,8 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
         convo,
     )
 
-    canvas_creds = get_canvas_credentials(request)
-    canvas_context_text, canvas_sources, canvas_confidence = build_canvas_context_for_chat(
-        body.content,
-        canvas_creds,
-    )
-
-    if "canvas" in canvas_sources and "canvas" not in sources_checked:
-        sources_checked.append("canvas")
-    if canvas_confidence == "high":
-        confidence = "high"
-
     try:
-        system_message = (
-            "You are UniSync, a helpful academic assistant for university students. "
-            "Be clear, concise, practical, and friendly. "
-            "Do not reveal private chain-of-thought. "
-            "Give a direct answer. "
-            "If Canvas context is provided, use it as the source of truth for the connected user. "
-            "Do not invent grades, assignments, dates, or announcements that are not present."
-        )
-
-        messages = [{"role": "system", "content": system_message}]
-
-        if canvas_context_text:
-            messages.append({"role": "system", "content": canvas_context_text})
-
-        messages.extend(
-            [{"role": msg.role, "content": msg.content} for msg in convo.messages]
-        )
-
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-        )
-
-        assistant_text = (completion.choices[0].message.content or "").strip()
-        if not assistant_text:
-            assistant_text = "Sorry, I could not generate a response."
-
+        assistant_text = run_agent_with_tools(convo, request)
     except Exception as e:
         print("OPENAI CHAT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -750,8 +869,6 @@ def delete_all_data():
         "success": True,
         "message": "All backend UniSync conversation and Canvas session data has been deleted.",
     }
-
-
 
 
 # -------------------------
@@ -824,4 +941,3 @@ def speak_text(body: SpeechRequest):
     except Exception as e:
         print("OPENAI TTS ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
-
