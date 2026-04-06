@@ -126,18 +126,29 @@ class CanvasStatusResponse(BaseModel):
     user: Optional[dict] = None
 
 
+class OutlookConnectRequest(BaseModel):
+    accessToken: str
+
+
+class OutlookStatusResponse(BaseModel):
+    connected: bool
+    user: Optional[dict] = None
+
+
 # -------------------------
 # In-memory store
 # -------------------------
 
 conversations_store: dict[str, Conversation] = {}
 canvas_session_store: dict[str, dict] = {}
+outlook_session_store: dict[str, dict] = {}
 
 # -------------------------
 # Helpers
 # -------------------------
 
 CANVAS_SESSION_COOKIE = "unisync_canvas_sid"
+OUTLOOK_SESSION_COOKIE = "unisync_outlook_sid"
 
 
 def now_iso() -> str:
@@ -155,6 +166,10 @@ def get_canvas_session_id(request: Request) -> Optional[str]:
     return request.cookies.get(CANVAS_SESSION_COOKIE)
 
 
+def get_outlook_session_id(request: Request) -> Optional[str]:
+    return request.cookies.get(OUTLOOK_SESSION_COOKIE)
+
+
 def get_canvas_credentials(request: Request) -> Optional[dict]:
     session_id = get_canvas_session_id(request)
     if not session_id:
@@ -162,10 +177,24 @@ def get_canvas_credentials(request: Request) -> Optional[dict]:
     return canvas_session_store.get(session_id)
 
 
+def get_outlook_credentials(request: Request) -> Optional[dict]:
+    session_id = get_outlook_session_id(request)
+    if not session_id:
+        return None
+    return outlook_session_store.get(session_id)
+
+
 def require_canvas_credentials(request: Request) -> dict:
     creds = get_canvas_credentials(request)
     if not creds:
         raise HTTPException(status_code=401, detail="Canvas not connected for this session")
+    return creds
+
+
+def require_outlook_credentials(request: Request) -> dict:
+    creds = get_outlook_credentials(request)
+    if not creds:
+        raise HTTPException(status_code=401, detail="Outlook not connected for this session")
     return creds
 
 
@@ -185,6 +214,48 @@ def canvas_get(
         return response
     except requests.RequestException:
         raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+
+
+def graph_get(
+    access_token: str,
+    path: str,
+    params: Optional[dict] = None,
+    timeout: int = 20,
+):
+    try:
+        response = requests.get(
+            f"https://graph.microsoft.com/v1.0{path}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            params=params or {},
+            timeout=timeout,
+        )
+        return response
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to reach Microsoft Graph")
+
+
+def graph_post(
+    access_token: str,
+    path: str,
+    payload: dict,
+    timeout: int = 20,
+):
+    try:
+        response = requests.post(
+            f"https://graph.microsoft.com/v1.0{path}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=timeout,
+        )
+        return response
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to reach Microsoft Graph")
 
 
 def safe_json(response: requests.Response) -> Any:
@@ -215,17 +286,19 @@ def get_usage_snapshot() -> PrivacyUsageResponse:
             "unisync_conversations",
             "unisync_canvas_base_url",
             "unisync_canvas_token",
+            "unisync_outlook_token",
         ],
         backendStores=[
             "conversation metadata",
             "message history",
             "reasoning summary metadata",
             "canvas session memory",
+            "outlook session memory",
         ],
         llmProvider="OpenAI",
         modelUsed="gpt-4o-mini",
         retentionNote=(
-            "Current prototype stores chat data and Canvas session data in backend memory only "
+            "Current prototype stores chat data and connected session data in backend memory only "
             "while the server is running. No database persistence is enabled yet."
         ),
         exportedAt=now_iso(),
@@ -248,11 +321,13 @@ def build_reasoning_summary(
             "grade", "announcement", "schedule", "timetable", "calendar"
         ]
     ):
-        sources_checked.append("canvas")
+        if "canvas" not in sources_checked:
+            sources_checked.append("canvas")
         confidence = "high"
 
-    if any(word in text for word in ["email", "outlook", "mail"]):
-        sources_checked.append("email")
+    if any(word in text for word in ["email", "outlook", "mail", "send email"]):
+        if "outlook" not in sources_checked:
+            sources_checked.append("outlook")
         confidence = "high"
 
     if any(word in text for word in ["calendar", "meeting", "schedule", "event"]):
@@ -285,70 +360,6 @@ def build_reasoning_summary(
 # -------------------------
 # Canvas Data Helpers
 # -------------------------
-
-def summarize_courses_for_prompt(courses: list[dict]) -> list[dict]:
-    result = []
-    for course in courses[:20]:
-        result.append({
-            "id": course.get("id"),
-            "name": course.get("name"),
-            "course_code": course.get("course_code"),
-            "workflow_state": course.get("workflow_state"),
-            "start_at": course.get("start_at"),
-            "end_at": course.get("end_at"),
-            "current_grade": course.get("enrollments", [{}])[0].get("computed_current_grade")
-            if course.get("enrollments") else None,
-            "current_score": course.get("enrollments", [{}])[0].get("computed_current_score")
-            if course.get("enrollments") else None,
-            "final_grade": course.get("enrollments", [{}])[0].get("computed_final_grade")
-            if course.get("enrollments") else None,
-            "final_score": course.get("enrollments", [{}])[0].get("computed_final_score")
-            if course.get("enrollments") else None,
-        })
-    return result
-
-
-def summarize_todos_for_prompt(todos: list[dict]) -> list[dict]:
-    result = []
-    for item in todos[:25]:
-        assignment = item.get("assignment") or {}
-        result.append({
-            "course_name": item.get("course_name"),
-            "assignment_name": assignment.get("name") or item.get("assignment_name"),
-            "points_possible": assignment.get("points_possible"),
-            "due_at": assignment.get("due_at"),
-            "html_url": assignment.get("html_url"),
-            "type": item.get("type"),
-        })
-    return result
-
-
-def summarize_announcements_for_prompt(announcements: list[dict]) -> list[dict]:
-    result = []
-    for ann in announcements[:20]:
-        result.append({
-            "title": ann.get("title"),
-            "posted_at": ann.get("posted_at"),
-            "context_name": ann.get("context_name"),
-            "message": (ann.get("message") or "")[:500],
-        })
-    return result
-
-
-def summarize_calendar_events_for_prompt(events: list[dict]) -> list[dict]:
-    result = []
-    for event in events[:25]:
-        result.append({
-            "title": event.get("title"),
-            "description": (event.get("description") or "")[:300],
-            "start_at": event.get("start_at"),
-            "end_at": event.get("end_at"),
-            "location_name": event.get("location_name"),
-            "context_code": event.get("context_code"),
-            "type": event.get("type"),
-        })
-    return result
-
 
 def get_canvas_courses_data(creds: dict, include_grades: bool = False) -> list[dict]:
     params = {"enrollment_state": "active"}
@@ -423,6 +434,62 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
 
 
 # -------------------------
+# Outlook / Graph Helpers
+# -------------------------
+
+def get_outlook_me(access_token: str) -> dict:
+    response = graph_get(access_token, "/me")
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Outlook token")
+    return safe_json(response) or {}
+
+
+def send_outlook_email_via_graph(
+    access_token: str,
+    to: str,
+    subject: str,
+    body: str,
+    cc: Optional[str] = None,
+    bcc: Optional[str] = None,
+    save_to_sent_items: bool = True,
+) -> dict:
+    def build_recipients(csv_text: Optional[str]) -> list[dict]:
+        if not csv_text:
+            return []
+        emails = [item.strip() for item in csv_text.split(",") if item.strip()]
+        return [{"emailAddress": {"address": email}} for email in emails]
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {
+                "contentType": "Text",
+                "content": body,
+            },
+            "toRecipients": build_recipients(to),
+            "ccRecipients": build_recipients(cc),
+            "bccRecipients": build_recipients(bcc),
+        },
+        "saveToSentItems": save_to_sent_items,
+    }
+
+    response = graph_post(access_token, "/me/sendMail", payload)
+
+    if response.status_code not in (200, 202):
+        detail = safe_json(response) or response.text
+        raise HTTPException(status_code=response.status_code, detail=f"Failed to send Outlook email: {detail}")
+
+    return {
+        "success": True,
+        "status_code": response.status_code,
+        "message": "Email sent successfully through Outlook.",
+        "to": to,
+        "subject": subject,
+        "sent_at": now_iso(),
+    }
+
+
+# -------------------------
 # Tool Calling
 # -------------------------
 
@@ -449,7 +516,7 @@ def get_tools_schema():
             "type": "function",
             "function": {
                 "name": "get_canvas_assignments",
-                "description": "Get the user's upcoming Canvas assignments / todo items.",
+                "description": "Get the user's upcoming Canvas assignments or todo items.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -510,37 +577,104 @@ def get_tools_schema():
                     "properties": {},
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_outlook_profile",
+                "description": "Get the currently connected Outlook user's profile.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_outlook_email",
+                "description": "Send an email using the connected Outlook account.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "to": {
+                            "type": "string",
+                            "description": "Comma-separated recipient email addresses."
+                        },
+                        "subject": {
+                            "type": "string",
+                            "description": "Email subject."
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Plain text email body."
+                        },
+                        "cc": {
+                            "type": "string",
+                            "description": "Optional comma-separated CC email addresses."
+                        },
+                        "bcc": {
+                            "type": "string",
+                            "description": "Optional comma-separated BCC email addresses."
+                        },
+                        "save_to_sent_items": {
+                            "type": "boolean",
+                            "description": "Whether to save a copy to Sent Items."
+                        }
+                    },
+                    "required": ["to", "subject", "body"]
+                }
+            }
         }
     ]
 
 
 def execute_tool(tool_name: str, args: dict, request: Request):
     if tool_name.startswith("get_canvas"):
-        creds = require_canvas_credentials(request)
+        canvas_creds = require_canvas_credentials(request)
     else:
-        creds = None
+        canvas_creds = None
+
+    if tool_name in ("get_outlook_profile", "send_outlook_email"):
+        outlook_creds = require_outlook_credentials(request)
+    else:
+        outlook_creds = None
 
     if tool_name == "get_canvas_courses":
         include_grades = args.get("include_grades", False)
-        return get_canvas_courses_data(creds, include_grades=include_grades)
+        return get_canvas_courses_data(canvas_creds, include_grades=include_grades)
 
     elif tool_name == "get_canvas_assignments":
-        return get_canvas_assignments_data(creds)
+        return get_canvas_assignments_data(canvas_creds)
 
     elif tool_name == "get_canvas_announcements":
-        return get_canvas_announcements_data(creds)
+        return get_canvas_announcements_data(canvas_creds)
 
     elif tool_name == "get_canvas_grades":
-        return get_canvas_courses_data(creds, include_grades=True)
+        return get_canvas_courses_data(canvas_creds, include_grades=True)
 
     elif tool_name == "get_canvas_calendar":
-        return get_canvas_calendar_events_data(creds)
+        return get_canvas_calendar_events_data(canvas_creds)
 
     elif tool_name == "get_canvas_dashboard":
-        return get_canvas_dashboard_bundle(creds)
+        return get_canvas_dashboard_bundle(canvas_creds)
 
     elif tool_name == "get_privacy_usage":
         return get_usage_snapshot().dict()
+
+    elif tool_name == "get_outlook_profile":
+        return get_outlook_me(outlook_creds["token"])
+
+    elif tool_name == "send_outlook_email":
+        return send_outlook_email_via_graph(
+            access_token=outlook_creds["token"],
+            to=args["to"],
+            subject=args["subject"],
+            body=args["body"],
+            cc=args.get("cc"),
+            bcc=args.get("bcc"),
+            save_to_sent_items=args.get("save_to_sent_items", True),
+        )
 
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
@@ -550,9 +684,11 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
     system_message = (
         "You are UniSync, a helpful academic assistant for university students. "
         "Be clear, concise, practical, and friendly. "
-        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, or calendar questions. "
+        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, calendar questions, or sending emails. "
         "If Canvas is not connected and the user asks for Canvas-specific information, clearly tell them to connect Canvas. "
-        "Do not invent grades, assignments, deadlines, or announcements."
+        "If Outlook is not connected and the user asks to send email, clearly tell them to connect Outlook. "
+        "Do not invent grades, assignments, deadlines, announcements, or email send results. "
+        "Before sending email, ensure you have enough details like recipient, subject, and body from the conversation."
     )
 
     messages = [{"role": "system", "content": system_message}]
@@ -743,6 +879,101 @@ def disconnect_canvas(request: Request, response: Response):
 
 
 # -------------------------
+# Outlook Routes
+# -------------------------
+
+@app.post("/outlook/connect")
+def connect_outlook(body: OutlookConnectRequest, response: Response):
+    access_token = body.accessToken.strip()
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Outlook access token is required")
+
+    me = get_outlook_me(access_token)
+    session_id = secrets.token_urlsafe(32)
+
+    outlook_session_store[session_id] = {
+        "token": access_token,
+        "user_name": me.get("displayName"),
+        "user_id": me.get("id"),
+        "email": me.get("mail") or me.get("userPrincipalName"),
+        "connected_at": now_iso(),
+    }
+
+    response.set_cookie(
+        key=OUTLOOK_SESSION_COOKIE,
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 8,
+    )
+
+    return {
+        "success": True,
+        "user": {
+            "name": me.get("displayName"),
+            "id": me.get("id"),
+            "email": me.get("mail") or me.get("userPrincipalName"),
+        },
+    }
+
+
+@app.get("/outlook/status", response_model=OutlookStatusResponse)
+def outlook_status(request: Request):
+    creds = get_outlook_credentials(request)
+
+    if not creds:
+        return OutlookStatusResponse(connected=False)
+
+    return OutlookStatusResponse(
+        connected=True,
+        user={
+            "name": creds.get("user_name"),
+            "id": creds.get("user_id"),
+            "email": creds.get("email"),
+        },
+    )
+
+
+@app.post("/outlook/send")
+def send_outlook_direct(request: Request, payload: dict):
+    creds = require_outlook_credentials(request)
+
+    to = payload.get("to")
+    subject = payload.get("subject")
+    body = payload.get("body")
+    cc = payload.get("cc")
+    bcc = payload.get("bcc")
+    save_to_sent_items = payload.get("save_to_sent_items", True)
+
+    if not to or not subject or not body:
+        raise HTTPException(status_code=400, detail="to, subject, and body are required")
+
+    return send_outlook_email_via_graph(
+        access_token=creds["token"],
+        to=to,
+        subject=subject,
+        body=body,
+        cc=cc,
+        bcc=bcc,
+        save_to_sent_items=save_to_sent_items,
+    )
+
+
+@app.post("/outlook/disconnect")
+def disconnect_outlook(request: Request, response: Response):
+    session_id = get_outlook_session_id(request)
+
+    if session_id and session_id in outlook_session_store:
+        del outlook_session_store[session_id]
+
+    response.delete_cookie(OUTLOOK_SESSION_COOKIE)
+
+    return {"success": True}
+
+
+# -------------------------
 # Chat Routes
 # -------------------------
 
@@ -865,9 +1096,10 @@ def privacy_export():
 def delete_all_data():
     conversations_store.clear()
     canvas_session_store.clear()
+    outlook_session_store.clear()
     return {
         "success": True,
-        "message": "All backend UniSync conversation and Canvas session data has been deleted.",
+        "message": "All backend UniSync conversation and connected session data has been deleted.",
     }
 
 
