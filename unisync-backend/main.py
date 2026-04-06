@@ -82,9 +82,14 @@ class Conversation(BaseModel):
 class CreateConversationResponse(Conversation):
     pass
 
+class LanguagePreferences(BaseModel):
+    input_language: str = "auto"
+    output_text_language: str = "en"
+    output_speech_language: str = "en"
 
 class SendMessageRequest(BaseModel):
     content: str
+    language_prefs: Optional[LanguagePreferences] = None
 
 
 class SendMessageResponse(BaseModel):
@@ -139,6 +144,19 @@ class OutlookConnectRequest(BaseModel):
 class OutlookStatusResponse(BaseModel):
     connected: bool
     user: Optional[dict] = None
+
+class TranslationRequest(BaseModel):
+    text: str
+    target_language: str
+    source_language: Optional[str] = "auto"
+
+
+class TranslationResponse(BaseModel):
+    original_text: str
+    translated_text: str
+    source_language: str
+    target_language: str
+
 
 
 # -------------------------
@@ -364,7 +382,37 @@ def build_reasoning_summary(
 
     return steps, confidence, sources_checked, now_iso()
 
+def translate_text(text: str, target_language: str, source_language: str = "auto") -> dict:
+    if not text.strip():
+        return {
+            "original_text": text,
+            "translated_text": text,
+            "source_language": source_language,
+            "target_language": target_language,
+        }
 
+    prompt = (
+        f"Translate the following text from {source_language} to {target_language}. "
+        f"Preserve names, course codes, deadlines, URLs, and email addresses exactly.\n\n"
+        f"Text:\n{text}"
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a precise translation assistant."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+
+    translated = response.choices[0].message.content or text
+
+    return {
+        "original_text": text,
+        "translated_text": translated,
+        "source_language": source_language,
+        "target_language": target_language,
+    }
 # -------------------------
 # Canvas Data Helpers
 # -------------------------
@@ -736,6 +784,15 @@ def get_uc_public_events_today():
 def get_uc_public_events_week():
     events = scrape_uc_public_events()
     return filter_events_for_week(events)
+
+@app.post("/translate", response_model=TranslationResponse)
+def translate_endpoint(body: TranslationRequest):
+    result = translate_text(
+        text=body.text,
+        target_language=body.target_language,
+        source_language=body.source_language or "auto",
+    )
+    return TranslationResponse(**result)
 
 @app.post("/canvas/connect")
 def connect_canvas(body: CanvasConnectRequest, response: Response):
@@ -1379,7 +1436,7 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
             messages=messages,
         )
 
-        return final_response.choices[0].message.content or "I could not generate a response."
+        return response_message.content or "I could not generate a response."
 
 
 
@@ -1551,31 +1608,69 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    prefs = body.language_prefs or LanguagePreferences()
+    user_input = body.content
+    working_input = user_input
+
+    print("body.content:", repr(body.content))
+    print("prefs:", prefs.model_dump())
+
+    # Translate user input into English for internal routing
+    if prefs.input_language != "en":
+        translated_in = translate_text(
+            text=user_input,
+            target_language="en",
+            source_language=prefs.input_language or "auto",
+        )
+        working_input = translated_in.get("translated_text") or user_input
+
+    print("working_input after translation:", repr(working_input))
+
     user_message = Message(
         id=str(uuid4()),
         role="user",
-        content=body.content,
+        content=working_input,
         timestamp=now_iso(),
     )
     convo.messages.append(user_message)
 
     reasoning_summary, confidence, sources_checked, last_synced = build_reasoning_summary(
-        body.content,
+        working_input,
         convo,
     )
 
     try:
         assistant_text = run_agent_with_tools(convo, request)
+        print("assistant_text from run_agent:", repr(assistant_text))
     except Exception as e:
         import traceback
         traceback.print_exc()
         print("OPENAI CHAT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+    if not assistant_text or not isinstance(assistant_text, str):
+        assistant_text = "I could not generate a response."
+
+    final_text = assistant_text
+
+    # Translate assistant output back into selected language
+    if prefs.output_text_language != "en":
+        translated_out = translate_text(
+            text=assistant_text,
+            target_language=prefs.output_text_language,
+            source_language="en",
+        )
+        final_text = translated_out.get("translated_text") or assistant_text
+
+    if not final_text or not isinstance(final_text, str):
+        final_text = assistant_text or "I could not generate a response."
+
+    print("final_text after translation:", repr(final_text))
+
     assistant_message = Message(
         id=str(uuid4()),
         role="assistant",
-        content=assistant_text,
+        content=final_text,
         timestamp=now_iso(),
         reasoningSummary=reasoning_summary,
         confidence=confidence,
@@ -1584,14 +1679,13 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     )
     convo.messages.append(assistant_message)
 
-    convo.lastMessage = assistant_text
+    convo.lastMessage = final_text
     convo.timestamp = now_iso()
 
     return SendMessageResponse(
-        assistant=assistant_text,
+        assistant=final_text,
         message=assistant_message,
     )
-
 
 # -------------------------
 # Privacy Routes

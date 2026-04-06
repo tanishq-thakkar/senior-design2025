@@ -11,6 +11,9 @@ type Settings = {
   assignmentReminders: boolean;
   calendarAlerts: boolean;
   weeklyDigest: boolean;
+  inputLanguage: string;
+  outputTextLanguage: string;
+  outputSpeechLanguage: string;
 };
 
 type SettingsContextType = {
@@ -31,6 +34,9 @@ const defaultSettings: Settings = {
   assignmentReminders: true,
   calendarAlerts: true,
   weeklyDigest: false,
+  inputLanguage: "auto",
+  outputTextLanguage: "en",
+  outputSpeechLanguage: "en",
 };
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -40,7 +46,15 @@ const STORAGE_KEY = "unisync_settings";
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<Settings>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : defaultSettings;
+
+    if (!saved) return defaultSettings;
+
+    try {
+      const parsed = JSON.parse(saved);
+      return { ...defaultSettings, ...parsed };
+    } catch {
+      return defaultSettings;
+    }
   });
 
   useEffect(() => {

@@ -178,6 +178,69 @@ export default function Settings() {
         </section>
 
         <section className="rounded-2xl border p-6">
+          <h2 className="mb-6 text-2xl font-semibold">Language & Translation</h2>
+          <div className="space-y-6">
+            <div>
+              <p className="mb-2 font-medium">Input language</p>
+              <p className="mb-3 text-sm text-muted-foreground">
+                Choose the language students type or speak in
+              </p>
+              <select
+                className="w-full rounded-lg border bg-background px-3 py-2"
+                value={settings.inputLanguage}
+                onChange={(e) => updateSetting("inputLanguage", e.target.value)}
+              >
+                <option value="auto">Auto detect</option>
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="hi">Hindi</option>
+                <option value="fr">French</option>
+                <option value="ar">Arabic</option>
+                <option value="zh">Chinese</option>
+              </select>
+            </div>
+
+            <div>
+              <p className="mb-2 font-medium">Output text language</p>
+              <p className="mb-3 text-sm text-muted-foreground">
+                Choose the language used for written responses
+              </p>
+              <select
+                className="w-full rounded-lg border bg-background px-3 py-2"
+                value={settings.outputTextLanguage}
+                onChange={(e) => updateSetting("outputTextLanguage", e.target.value)}
+              >
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="hi">Hindi</option>
+                <option value="fr">French</option>
+                <option value="ar">Arabic</option>
+                <option value="zh">Chinese</option>
+              </select>
+            </div>
+
+            <div>
+              <p className="mb-2 font-medium">Output speech language</p>
+              <p className="mb-3 text-sm text-muted-foreground">
+                Choose the spoken language for voice responses
+              </p>
+              <select
+                className="w-full rounded-lg border bg-background px-3 py-2"
+                value={settings.outputSpeechLanguage}
+                onChange={(e) => updateSetting("outputSpeechLanguage", e.target.value)}
+              >
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="hi">Hindi</option>
+                <option value="fr">French</option>
+                <option value="ar">Arabic</option>
+                <option value="zh">Chinese</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border p-6">
           <h2 className="mb-6 text-2xl font-semibold">Accessibility</h2>
           <div className="space-y-6">
             <div className="flex items-center justify-between">
