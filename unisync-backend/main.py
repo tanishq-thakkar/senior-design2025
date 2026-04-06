@@ -1,12 +1,14 @@
 import os
 import tempfile
 import io
+import secrets
 from uuid import uuid4
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
+import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -106,16 +108,30 @@ class PrivacyExportResponse(BaseModel):
     conversations: list[Conversation]
 
 
+class CanvasConnectRequest(BaseModel):
+    canvasBaseUrl: str
+    accessToken: str
+
+
+class CanvasStatusResponse(BaseModel):
+    connected: bool
+    user: Optional[dict] = None
+
+
 # -------------------------
 # In-memory store
 # -------------------------
 
 conversations_store: dict[str, Conversation] = {}
+canvas_session_store: dict[str, dict] = {}
 
 
 # -------------------------
 # Helpers
 # -------------------------
+
+CANVAS_SESSION_COOKIE = "unisync_canvas_sid"
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -126,6 +142,17 @@ def make_title(text: str) -> str:
     if not text:
         return "New Chat"
     return text[:40] + ("..." if len(text) > 40 else "")
+
+
+def get_canvas_session_id(request: Request) -> Optional[str]:
+    return request.cookies.get(CANVAS_SESSION_COOKIE)
+
+
+def get_canvas_credentials(request: Request) -> Optional[dict]:
+    session_id = get_canvas_session_id(request)
+    if not session_id:
+        return None
+    return canvas_session_store.get(session_id)
 
 
 def get_usage_snapshot() -> PrivacyUsageResponse:
@@ -210,6 +237,123 @@ def build_reasoning_summary(user_text: str, convo: Conversation) -> tuple[list[R
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# -------------------------
+# Canvas Routes
+# -------------------------
+
+@app.post("/canvas/connect")
+def connect_canvas(body: CanvasConnectRequest, response: Response):
+    canvas_base_url = body.canvasBaseUrl.strip().rstrip("/")
+    access_token = body.accessToken.strip()
+
+    if not canvas_base_url or not access_token:
+        raise HTTPException(status_code=400, detail="Canvas base URL and access token are required")
+
+    try:
+        verify_response = requests.get(
+            f"{canvas_base_url}/api/v1/users/self",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+
+        if verify_response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid Canvas credentials")
+
+        user_data = verify_response.json()
+
+        old_session_id = response.headers.get("set-cookie")
+        _ = old_session_id  # no-op, keeps linter quiet if needed
+
+        session_id = secrets.token_urlsafe(32)
+
+        canvas_session_store[session_id] = {
+            "base_url": canvas_base_url,
+            "token": access_token,
+            "user_name": user_data.get("name"),
+            "user_id": user_data.get("id"),
+            "connected_at": now_iso(),
+        }
+
+        response.set_cookie(
+            key=CANVAS_SESSION_COOKIE,
+            value=session_id,
+            httponly=True,
+            samesite="lax",
+            secure=False,  # change to True in production with HTTPS
+            max_age=60 * 60 * 8,
+        )
+
+        return {
+            "success": True,
+            "user": {
+                "name": user_data.get("name"),
+                "id": user_data.get("id"),
+            },
+        }
+
+    except HTTPException:
+        raise
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+
+
+@app.get("/canvas/status", response_model=CanvasStatusResponse)
+def canvas_status(request: Request):
+    creds = get_canvas_credentials(request)
+
+    if not creds:
+        return CanvasStatusResponse(connected=False)
+
+    return CanvasStatusResponse(
+        connected=True,
+        user={
+            "name": creds.get("user_name"),
+            "id": creds.get("user_id"),
+        },
+    )
+
+
+@app.get("/canvas/courses")
+def get_canvas_courses(request: Request):
+    creds = get_canvas_credentials(request)
+
+    if not creds:
+        raise HTTPException(status_code=401, detail="Canvas not connected for this session")
+
+    try:
+        courses_response = requests.get(
+            f"{creds['base_url']}/api/v1/courses",
+            headers={"Authorization": f"Bearer {creds['token']}"},
+            params={"enrollment_state": "active"},
+            timeout=10,
+        )
+
+        if courses_response.status_code != 200:
+            raise HTTPException(
+                status_code=courses_response.status_code,
+                detail="Failed to fetch courses"
+            )
+
+        return courses_response.json()
+
+    except HTTPException:
+        raise
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="Failed to reach Canvas")
+
+
+@app.post("/canvas/disconnect")
+def disconnect_canvas(request: Request, response: Response):
+    session_id = get_canvas_session_id(request)
+
+    if session_id and session_id in canvas_session_store:
+        del canvas_session_store[session_id]
+
+    response.delete_cookie(CANVAS_SESSION_COOKIE)
+
+    return {"success": True}
 
 
 @app.get("/chat/conversations", response_model=list[Conversation])
@@ -345,6 +489,7 @@ def privacy_export():
 @app.delete("/privacy/data")
 def delete_all_data():
     conversations_store.clear()
+    canvas_session_store.clear()
     return {
         "success": True,
         "message": "All backend UniSync conversation data has been deleted."

@@ -1,17 +1,30 @@
-import { CheckCircle2, Clock, XCircle, RefreshCw, ExternalLink } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  CheckCircle2,
+  Clock,
+  XCircle,
+  RefreshCw,
+  ExternalLink,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { Integration } from "@/types/chat";
 import { formatDistanceToNow } from "date-fns";
 
-const mockIntegrations: Integration[] = [
+const API_BASE = "http://localhost:8000"
+
+const initialIntegrations: Integration[] = [
   {
     id: "canvas",
     name: "Canvas LMS",
     icon: "📘",
-    status: "connected",
-    lastSync: new Date(Date.now() - 1000 * 60 * 5),
-    permissions: ["View assignments and deadlines", "Read course announcements", "Access grades"],
+    status: "not_connected",
+    permissions: [
+      "View assignments and deadlines",
+      "Read course announcements",
+      "Access grades",
+    ],
   },
   {
     id: "outlook",
@@ -27,7 +40,10 @@ const mockIntegrations: Integration[] = [
     icon: "📧",
     status: "connected",
     lastSync: new Date(Date.now() - 1000 * 60 * 10),
-    permissions: ["Read email subjects and summaries", "Detect important notifications"],
+    permissions: [
+      "Read email subjects and summaries",
+      "Detect important notifications",
+    ],
   },
   {
     id: "corq",
@@ -63,62 +79,131 @@ const statusConfig = {
   },
 };
 
-function IntegrationCard({ integration }: { integration: Integration }) {
+type CanvasStatusResponse = {
+  connected: boolean;
+  user?: {
+    name?: string;
+    id?: number | string;
+  };
+};
+
+function IntegrationCard({
+  integration,
+  onCanvasConnectClick,
+  onCanvasRefresh,
+  onCanvasDisconnect,
+  canvasUserName,
+  loadingCanvas,
+}: {
+  integration: Integration;
+  onCanvasConnectClick: () => void;
+  onCanvasRefresh: () => void;
+  onCanvasDisconnect: () => void;
+  canvasUserName: string | null;
+  loadingCanvas: boolean;
+}) {
   const status = statusConfig[integration.status];
   const StatusIcon = status.icon;
+  const isCanvas = integration.id === "canvas";
 
   return (
-    <div className={cn(
-      "rounded-xl border border-border bg-card p-5 transition-smooth",
-      integration.status === "connected" && "hover:border-primary/30 hover:shadow-soft"
-    )}>
-      <div className="flex items-start justify-between">
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-card p-5 transition-smooth",
+        integration.status === "connected" &&
+          "hover:border-primary/30 hover:shadow-soft"
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="text-3xl">{integration.icon}</span>
           <div>
             <h3 className="font-medium text-foreground">{integration.name}</h3>
             <div className="mt-1 flex items-center gap-1.5">
               <StatusIcon className={cn("h-4 w-4", status.className)} />
-              <span className={cn("text-sm", status.className)}>{status.label}</span>
+              <span className={cn("text-sm", status.className)}>
+                {status.label}
+              </span>
             </div>
+            {isCanvas && canvasUserName && integration.status === "connected" && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Connected as {canvasUserName}
+              </p>
+            )}
           </div>
         </div>
-        
-        {integration.status === "connected" && integration.lastSync && (
-          <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground">
+
+        {isCanvas ? (
+          integration.status === "connected" ? (
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-xs text-muted-foreground"
+                onClick={onCanvasRefresh}
+                disabled={loadingCanvas}
+              >
+                <RefreshCw
+                  className={cn("h-3 w-3", loadingCanvas && "animate-spin")}
+                />
+                Sync
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={onCanvasDisconnect}
+                disabled={loadingCanvas}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              className="h-8"
+              onClick={onCanvasConnectClick}
+              disabled={loadingCanvas}
+            >
+              {loadingCanvas ? "Connecting..." : "Connect"}
+            </Button>
+          )
+        ) : integration.status === "connected" && integration.lastSync ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1.5 text-xs text-muted-foreground"
+          >
             <RefreshCw className="h-3 w-3" />
             Sync
           </Button>
-        )}
-        
-        {integration.status === "not_connected" && (
+        ) : integration.status === "not_connected" ? (
           <Button size="sm" className="h-8">
             Connect
           </Button>
-        )}
-        
-        {integration.status === "pending" && (
+        ) : (
           <Button variant="outline" size="sm" className="h-8">
             Complete Setup
           </Button>
         )}
       </div>
 
-      {/* Last sync time */}
       {integration.lastSync && (
         <p className="mt-3 text-xs text-muted-foreground">
           Last synced {formatDistanceToNow(integration.lastSync, { addSuffix: true })}
         </p>
       )}
 
-      {/* Permissions */}
       <div className="mt-4 space-y-1.5">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
           Permissions
         </p>
         <ul className="space-y-1">
           {integration.permissions.map((perm, index) => (
-            <li key={index} className="flex items-center gap-2 text-sm text-foreground">
+            <li
+              key={index}
+              className="flex items-center gap-2 text-sm text-foreground"
+            >
               <span className="h-1 w-1 rounded-full bg-muted-foreground/40" />
               {perm}
             </li>
@@ -130,36 +215,258 @@ function IntegrationCard({ integration }: { integration: Integration }) {
 }
 
 export default function Integrations() {
-  const connectedCount = mockIntegrations.filter((i) => i.status === "connected").length;
+  const [integrations, setIntegrations] =
+    useState<Integration[]>(initialIntegrations);
+  const [canvasBaseUrl, setCanvasBaseUrl] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [showCanvasModal, setShowCanvasModal] = useState(false);
+  const [loadingCanvas, setLoadingCanvas] = useState(false);
+  const [canvasUserName, setCanvasUserName] = useState<string | null>(null);
+  const [canvasError, setCanvasError] = useState<string | null>(null);
+
+  const updateCanvasIntegration = (connected: boolean) => {
+    setIntegrations((prev) =>
+      prev.map((integration) =>
+        integration.id === "canvas"
+          ? {
+              ...integration,
+              status: connected ? "connected" : "not_connected",
+              lastSync: connected ? new Date() : undefined,
+            }
+          : integration
+      )
+    );
+  };
+
+  const fetchCanvasStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/canvas/status`, {
+        credentials: "include",
+      });
+
+      const data: CanvasStatusResponse = await res.json();
+
+      if (data.connected) {
+        updateCanvasIntegration(true);
+        setCanvasUserName(data.user?.name ?? null);
+      } else {
+        updateCanvasIntegration(false);
+        setCanvasUserName(null);
+      }
+    } catch (error) {
+      console.error("Canvas status error:", error);
+      updateCanvasIntegration(false);
+      setCanvasUserName(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchCanvasStatus();
+  }, []);
+
+  const handleCanvasConnect = async () => {
+    setCanvasError(null);
+
+    if (!canvasBaseUrl.trim() || !accessToken.trim()) {
+      setCanvasError("Please enter both Canvas base URL and access token.");
+      return;
+    }
+
+    try {
+      setLoadingCanvas(true);
+
+      const res = await fetch(`${API_BASE}/canvas/connect`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          canvasBaseUrl: canvasBaseUrl.trim(),
+          accessToken: accessToken.trim(),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to connect Canvas.");
+      }
+
+      updateCanvasIntegration(true);
+      setCanvasUserName(data.user?.name ?? null);
+      setAccessToken("");
+      setCanvasError(null);
+      setShowCanvasModal(false);
+    } catch (error) {
+      console.error("Canvas connect error:", error);
+      setCanvasError(
+        error instanceof Error ? error.message : "Failed to connect Canvas."
+      );
+    } finally {
+      setLoadingCanvas(false);
+    }
+  };
+
+  const handleCanvasDisconnect = async () => {
+    try {
+      setLoadingCanvas(true);
+
+      const res = await fetch(`${API_BASE}/canvas/disconnect`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to disconnect Canvas.");
+      }
+
+      updateCanvasIntegration(false);
+      setCanvasUserName(null);
+      setAccessToken("");
+      setCanvasBaseUrl("");
+      setCanvasError(null);
+      setShowCanvasModal(false);
+    } catch (error) {
+      console.error("Canvas disconnect error:", error);
+      setCanvasError(
+        error instanceof Error ? error.message : "Failed to disconnect Canvas."
+      );
+    } finally {
+      setLoadingCanvas(false);
+    }
+  };
+
+  const handleCanvasRefresh = async () => {
+    try {
+      setLoadingCanvas(true);
+      await fetchCanvasStatus();
+    } finally {
+      setLoadingCanvas(false);
+    }
+  };
+
+  const connectedCount = integrations.filter(
+    (integration) => integration.status === "connected"
+  ).length;
 
   return (
     <div className="min-h-screen px-4 pt-24 pb-12">
       <div className="mx-auto max-w-3xl space-y-8">
-        {/* Header */}
         <div className="animate-fade-in">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             Integrations
           </h1>
           <p className="mt-1 text-muted-foreground">
-            {connectedCount} of {mockIntegrations.length} services connected
+            {connectedCount} of {integrations.length} services connected
           </p>
         </div>
 
-        {/* Integration cards */}
         <div className="grid gap-4 sm:grid-cols-2 animate-fade-in-up">
-          {mockIntegrations.map((integration) => (
-            <IntegrationCard key={integration.id} integration={integration} />
+          {integrations.map((integration) => (
+            <IntegrationCard
+              key={integration.id}
+              integration={integration}
+              onCanvasConnectClick={() => {
+                setCanvasError(null);
+                setShowCanvasModal(true);
+              }}
+              onCanvasRefresh={handleCanvasRefresh}
+              onCanvasDisconnect={handleCanvasDisconnect}
+              canvasUserName={canvasUserName}
+              loadingCanvas={loadingCanvas}
+            />
           ))}
         </div>
 
-        {/* Info footer */}
         <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
           <p className="flex items-center gap-2">
             <ExternalLink className="h-4 w-4" />
-            UniSync only accesses data you explicitly allow. Your credentials are never stored.
+            UniSync only accesses data you explicitly allow. Canvas credentials
+            are handled through your active backend session.
           </p>
         </div>
       </div>
+
+      {showCanvasModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">
+                  Connect Canvas LMS
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Enter your Canvas base URL and personal access token.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCanvasModal(false);
+                  setCanvasError(null);
+                  setAccessToken("");
+                }}
+                className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-foreground">
+                  Canvas Base URL
+                </label>
+                <input
+                  type="text"
+                  value={canvasBaseUrl}
+                  onChange={(e) => setCanvasBaseUrl(e.target.value)}
+                  placeholder="https://your-school.instructure.com"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-foreground">
+                  Access Token
+                </label>
+                <input
+                  type="password"
+                  value={accessToken}
+                  onChange={(e) => setAccessToken(e.target.value)}
+                  placeholder="Paste your Canvas access token"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none"
+                />
+              </div>
+
+              {canvasError && (
+                <p className="text-sm text-red-500">{canvasError}</p>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <Button onClick={handleCanvasConnect} disabled={loadingCanvas}>
+                  {loadingCanvas ? "Connecting..." : "Save and Connect"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowCanvasModal(false);
+                    setCanvasError(null);
+                    setAccessToken("");
+                  }}
+                  disabled={loadingCanvas}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
