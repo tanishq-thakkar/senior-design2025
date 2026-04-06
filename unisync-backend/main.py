@@ -477,7 +477,10 @@ def send_outlook_email_via_graph(
 
     if response.status_code not in (200, 202):
         detail = safe_json(response) or response.text
-        raise HTTPException(status_code=response.status_code, detail=f"Failed to send Outlook email: {detail}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Failed to send Outlook email: {detail}",
+        )
 
     return {
         "success": True,
@@ -660,7 +663,7 @@ def execute_tool(tool_name: str, args: dict, request: Request):
         return get_canvas_dashboard_bundle(canvas_creds)
 
     elif tool_name == "get_privacy_usage":
-        return get_usage_snapshot().dict()
+        return get_usage_snapshot().model_dump()
 
     elif tool_name == "get_outlook_profile":
         return get_outlook_me(outlook_creds["token"])

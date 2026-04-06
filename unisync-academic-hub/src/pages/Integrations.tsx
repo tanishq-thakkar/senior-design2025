@@ -15,6 +15,7 @@ import { formatDistanceToNow } from "date-fns";
 const API_BASE = "http://localhost:8000";
 const CANVAS_BASE_URL_KEY = "unisync_canvas_base_url";
 const CANVAS_TOKEN_KEY = "unisync_canvas_token";
+const OUTLOOK_TOKEN_KEY = "unisync_outlook_token";
 
 const initialIntegrations: Integration[] = [
   {
@@ -30,19 +31,22 @@ const initialIntegrations: Integration[] = [
   },
   {
     id: "outlook",
-    name: "Outlook Calendar",
-    icon: "📅",
-    status: "connected",
-    lastSync: new Date(Date.now() - 1000 * 60 * 2),
-    permissions: ["View calendar events", "Read meeting invitations"],
+    name: "Outlook",
+    icon: "📧",
+    status: "not_connected",
+    permissions: [
+      "Send email",
+      "Read Outlook profile",
+      "Use connected Outlook account in chat",
+    ],
   },
   {
     id: "email",
     name: "University Email",
-    icon: "📧",
-    status: "connected",
-    lastSync: new Date(Date.now() - 1000 * 60 * 10),
+    icon: "📨",
+    status: "not_connected",
     permissions: [
+      "Reserved for future email integration",
       "Read email subjects and summaries",
       "Detect important notifications",
     ],
@@ -89,24 +93,46 @@ type CanvasStatusResponse = {
   };
 };
 
+type OutlookStatusResponse = {
+  connected: boolean;
+  user?: {
+    name?: string;
+    id?: number | string;
+    email?: string;
+  };
+};
+
 function IntegrationCard({
   integration,
   onCanvasConnectClick,
   onCanvasRefresh,
   onCanvasDisconnect,
+  onOutlookConnectClick,
+  onOutlookRefresh,
+  onOutlookDisconnect,
   canvasUserName,
+  outlookUserName,
+  outlookEmail,
   loadingCanvas,
+  loadingOutlook,
 }: {
   integration: Integration;
   onCanvasConnectClick: () => void;
   onCanvasRefresh: () => void;
   onCanvasDisconnect: () => void;
+  onOutlookConnectClick: () => void;
+  onOutlookRefresh: () => void;
+  onOutlookDisconnect: () => void;
   canvasUserName: string | null;
+  outlookUserName: string | null;
+  outlookEmail: string | null;
   loadingCanvas: boolean;
+  loadingOutlook: boolean;
 }) {
   const status = statusConfig[integration.status];
   const StatusIcon = status.icon;
   const isCanvas = integration.id === "canvas";
+  const isOutlook = integration.id === "outlook";
 
   return (
     <div
@@ -127,9 +153,17 @@ function IntegrationCard({
                 {status.label}
               </span>
             </div>
+
             {isCanvas && canvasUserName && integration.status === "connected" && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Connected as {canvasUserName}
+              </p>
+            )}
+
+            {isOutlook && integration.status === "connected" && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Connected as {outlookUserName || "Unknown user"}
+                {outlookEmail ? ` (${outlookEmail})` : ""}
               </p>
             )}
           </div>
@@ -168,6 +202,41 @@ function IntegrationCard({
               disabled={loadingCanvas}
             >
               {loadingCanvas ? "Connecting..." : "Connect"}
+            </Button>
+          )
+        ) : isOutlook ? (
+          integration.status === "connected" ? (
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-xs text-muted-foreground"
+                onClick={onOutlookRefresh}
+                disabled={loadingOutlook}
+              >
+                <RefreshCw
+                  className={cn("h-3 w-3", loadingOutlook && "animate-spin")}
+                />
+                Sync
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={onOutlookDisconnect}
+                disabled={loadingOutlook}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              className="h-8"
+              onClick={onOutlookConnectClick}
+              disabled={loadingOutlook}
+            >
+              {loadingOutlook ? "Connecting..." : "Connect"}
             </Button>
           )
         ) : integration.status === "connected" && integration.lastSync ? (
@@ -219,17 +288,28 @@ function IntegrationCard({
 export default function Integrations() {
   const [integrations, setIntegrations] =
     useState<Integration[]>(initialIntegrations);
+
   const [canvasBaseUrl, setCanvasBaseUrl] = useState("");
-  const [accessToken, setAccessToken] = useState("");
+  const [canvasAccessToken, setCanvasAccessToken] = useState("");
   const [showCanvasModal, setShowCanvasModal] = useState(false);
   const [loadingCanvas, setLoadingCanvas] = useState(false);
   const [canvasUserName, setCanvasUserName] = useState<string | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
 
-  const updateCanvasIntegration = (connected: boolean) => {
+  const [outlookAccessToken, setOutlookAccessToken] = useState("");
+  const [showOutlookModal, setShowOutlookModal] = useState(false);
+  const [loadingOutlook, setLoadingOutlook] = useState(false);
+  const [outlookUserName, setOutlookUserName] = useState<string | null>(null);
+  const [outlookEmail, setOutlookEmail] = useState<string | null>(null);
+  const [outlookError, setOutlookError] = useState<string | null>(null);
+
+  const updateIntegrationStatus = (
+    integrationId: string,
+    connected: boolean
+  ) => {
     setIntegrations((prev) =>
       prev.map((integration) =>
-        integration.id === "canvas"
+        integration.id === integrationId
           ? {
               ...integration,
               status: connected ? "connected" : "not_connected",
@@ -249,23 +329,48 @@ export default function Integrations() {
       const data: CanvasStatusResponse = await res.json();
 
       if (data.connected) {
-        updateCanvasIntegration(true);
+        updateIntegrationStatus("canvas", true);
         setCanvasUserName(data.user?.name ?? null);
       } else {
-        updateCanvasIntegration(false);
+        updateIntegrationStatus("canvas", false);
         setCanvasUserName(null);
       }
     } catch (error) {
       console.error("Canvas status error:", error);
-      updateCanvasIntegration(false);
+      updateIntegrationStatus("canvas", false);
       setCanvasUserName(null);
+    }
+  };
+
+  const fetchOutlookStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/outlook/status`, {
+        credentials: "include",
+      });
+
+      const data: OutlookStatusResponse = await res.json();
+
+      if (data.connected) {
+        updateIntegrationStatus("outlook", true);
+        setOutlookUserName(data.user?.name ?? null);
+        setOutlookEmail(data.user?.email ?? null);
+      } else {
+        updateIntegrationStatus("outlook", false);
+        setOutlookUserName(null);
+        setOutlookEmail(null);
+      }
+    } catch (error) {
+      console.error("Outlook status error:", error);
+      updateIntegrationStatus("outlook", false);
+      setOutlookUserName(null);
+      setOutlookEmail(null);
     }
   };
 
   const handleCanvasConnect = async () => {
     setCanvasError(null);
 
-    if (!canvasBaseUrl.trim() || !accessToken.trim()) {
+    if (!canvasBaseUrl.trim() || !canvasAccessToken.trim()) {
       setCanvasError("Please enter both Canvas base URL and access token.");
       return;
     }
@@ -274,7 +379,7 @@ export default function Integrations() {
       setLoadingCanvas(true);
 
       const cleanedBaseUrl = canvasBaseUrl.trim().replace(/\/+$/, "");
-      const cleanedToken = accessToken.trim();
+      const cleanedToken = canvasAccessToken.trim();
 
       const res = await fetch(`${API_BASE}/canvas/connect`, {
         method: "POST",
@@ -297,9 +402,9 @@ export default function Integrations() {
       localStorage.setItem(CANVAS_BASE_URL_KEY, cleanedBaseUrl);
       localStorage.setItem(CANVAS_TOKEN_KEY, cleanedToken);
 
-      updateCanvasIntegration(true);
+      updateIntegrationStatus("canvas", true);
       setCanvasUserName(data.user?.name ?? null);
-      setAccessToken("");
+      setCanvasAccessToken("");
       setCanvasError(null);
       setShowCanvasModal(false);
     } catch (error) {
@@ -309,6 +414,54 @@ export default function Integrations() {
       );
     } finally {
       setLoadingCanvas(false);
+    }
+  };
+
+  const handleOutlookConnect = async () => {
+    setOutlookError(null);
+
+    if (!outlookAccessToken.trim()) {
+      setOutlookError("Please enter a Microsoft Graph access token.");
+      return;
+    }
+
+    try {
+      setLoadingOutlook(true);
+
+      const cleanedToken = outlookAccessToken.trim();
+
+      const res = await fetch(`${API_BASE}/outlook/connect`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          accessToken: cleanedToken,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to connect Outlook.");
+      }
+
+      localStorage.setItem(OUTLOOK_TOKEN_KEY, cleanedToken);
+
+      updateIntegrationStatus("outlook", true);
+      setOutlookUserName(data.user?.name ?? null);
+      setOutlookEmail(data.user?.email ?? null);
+      setOutlookAccessToken("");
+      setOutlookError(null);
+      setShowOutlookModal(false);
+    } catch (error) {
+      console.error("Outlook connect error:", error);
+      setOutlookError(
+        error instanceof Error ? error.message : "Failed to connect Outlook."
+      );
+    } finally {
+      setLoadingOutlook(false);
     }
   };
 
@@ -330,9 +483,9 @@ export default function Integrations() {
       localStorage.removeItem(CANVAS_BASE_URL_KEY);
       localStorage.removeItem(CANVAS_TOKEN_KEY);
 
-      updateCanvasIntegration(false);
+      updateIntegrationStatus("canvas", false);
       setCanvasUserName(null);
-      setAccessToken("");
+      setCanvasAccessToken("");
       setCanvasBaseUrl("");
       setCanvasError(null);
       setShowCanvasModal(false);
@@ -346,6 +499,39 @@ export default function Integrations() {
     }
   };
 
+  const handleOutlookDisconnect = async () => {
+    try {
+      setLoadingOutlook(true);
+
+      const res = await fetch(`${API_BASE}/outlook/disconnect`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || "Failed to disconnect Outlook.");
+      }
+
+      localStorage.removeItem(OUTLOOK_TOKEN_KEY);
+
+      updateIntegrationStatus("outlook", false);
+      setOutlookUserName(null);
+      setOutlookEmail(null);
+      setOutlookAccessToken("");
+      setOutlookError(null);
+      setShowOutlookModal(false);
+    } catch (error) {
+      console.error("Outlook disconnect error:", error);
+      setOutlookError(
+        error instanceof Error ? error.message : "Failed to disconnect Outlook."
+      );
+    } finally {
+      setLoadingOutlook(false);
+    }
+  };
+
   const handleCanvasRefresh = async () => {
     try {
       setLoadingCanvas(true);
@@ -355,29 +541,36 @@ export default function Integrations() {
     }
   };
 
-  useEffect(() => {
-    const savedBaseUrl = localStorage.getItem(CANVAS_BASE_URL_KEY) || "";
-    const savedToken = localStorage.getItem(CANVAS_TOKEN_KEY) || "";
+  const handleOutlookRefresh = async () => {
+    try {
+      setLoadingOutlook(true);
+      await fetchOutlookStatus();
+    } finally {
+      setLoadingOutlook(false);
+    }
+  };
 
-    if (savedBaseUrl) {
-      setCanvasBaseUrl(savedBaseUrl);
+  useEffect(() => {
+    const savedCanvasBaseUrl = localStorage.getItem(CANVAS_BASE_URL_KEY) || "";
+    const savedCanvasToken = localStorage.getItem(CANVAS_TOKEN_KEY) || "";
+    const savedOutlookToken = localStorage.getItem(OUTLOOK_TOKEN_KEY) || "";
+
+    if (savedCanvasBaseUrl) {
+      setCanvasBaseUrl(savedCanvasBaseUrl);
     }
 
-    const initializeCanvas = async () => {
+    const initializeIntegrations = async () => {
       try {
-        const statusRes = await fetch(`${API_BASE}/canvas/status`, {
+        const canvasStatusRes = await fetch(`${API_BASE}/canvas/status`, {
           credentials: "include",
         });
+        const canvasStatusData: CanvasStatusResponse =
+          await canvasStatusRes.json();
 
-        const statusData: CanvasStatusResponse = await statusRes.json();
-
-        if (statusData.connected) {
-          updateCanvasIntegration(true);
-          setCanvasUserName(statusData.user?.name ?? null);
-          return;
-        }
-
-        if (savedBaseUrl && savedToken) {
+        if (canvasStatusData.connected) {
+          updateIntegrationStatus("canvas", true);
+          setCanvasUserName(canvasStatusData.user?.name ?? null);
+        } else if (savedCanvasBaseUrl && savedCanvasToken) {
           const reconnectRes = await fetch(`${API_BASE}/canvas/connect`, {
             method: "POST",
             headers: {
@@ -385,32 +578,74 @@ export default function Integrations() {
             },
             credentials: "include",
             body: JSON.stringify({
-              canvasBaseUrl: savedBaseUrl.replace(/\/+$/, ""),
-              accessToken: savedToken,
+              canvasBaseUrl: savedCanvasBaseUrl.replace(/\/+$/, ""),
+              accessToken: savedCanvasToken,
             }),
           });
 
           const reconnectData = await reconnectRes.json();
 
           if (reconnectRes.ok) {
-            updateCanvasIntegration(true);
+            updateIntegrationStatus("canvas", true);
             setCanvasUserName(reconnectData.user?.name ?? null);
           } else {
-            updateCanvasIntegration(false);
+            updateIntegrationStatus("canvas", false);
             setCanvasUserName(null);
           }
         } else {
-          updateCanvasIntegration(false);
+          updateIntegrationStatus("canvas", false);
           setCanvasUserName(null);
         }
+
+        const outlookStatusRes = await fetch(`${API_BASE}/outlook/status`, {
+          credentials: "include",
+        });
+        const outlookStatusData: OutlookStatusResponse =
+          await outlookStatusRes.json();
+
+        if (outlookStatusData.connected) {
+          updateIntegrationStatus("outlook", true);
+          setOutlookUserName(outlookStatusData.user?.name ?? null);
+          setOutlookEmail(outlookStatusData.user?.email ?? null);
+        } else if (savedOutlookToken) {
+          const reconnectRes = await fetch(`${API_BASE}/outlook/connect`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            credentials: "include",
+            body: JSON.stringify({
+              accessToken: savedOutlookToken,
+            }),
+          });
+
+          const reconnectData = await reconnectRes.json();
+
+          if (reconnectRes.ok) {
+            updateIntegrationStatus("outlook", true);
+            setOutlookUserName(reconnectData.user?.name ?? null);
+            setOutlookEmail(reconnectData.user?.email ?? null);
+          } else {
+            updateIntegrationStatus("outlook", false);
+            setOutlookUserName(null);
+            setOutlookEmail(null);
+          }
+        } else {
+          updateIntegrationStatus("outlook", false);
+          setOutlookUserName(null);
+          setOutlookEmail(null);
+        }
       } catch (error) {
-        console.error("Canvas init error:", error);
-        updateCanvasIntegration(false);
+        console.error("Integration init error:", error);
+        updateIntegrationStatus("canvas", false);
         setCanvasUserName(null);
+        updateIntegrationStatus("outlook", false);
+        setOutlookUserName(null);
+        setOutlookEmail(null);
       }
     };
 
-    initializeCanvas();
+    initializeIntegrations();
   }, []);
 
   const connectedCount = integrations.filter(
@@ -440,8 +675,17 @@ export default function Integrations() {
               }}
               onCanvasRefresh={handleCanvasRefresh}
               onCanvasDisconnect={handleCanvasDisconnect}
+              onOutlookConnectClick={() => {
+                setOutlookError(null);
+                setShowOutlookModal(true);
+              }}
+              onOutlookRefresh={handleOutlookRefresh}
+              onOutlookDisconnect={handleOutlookDisconnect}
               canvasUserName={canvasUserName}
+              outlookUserName={outlookUserName}
+              outlookEmail={outlookEmail}
               loadingCanvas={loadingCanvas}
+              loadingOutlook={loadingOutlook}
             />
           ))}
         </div>
@@ -449,8 +693,8 @@ export default function Integrations() {
         <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
           <p className="flex items-center gap-2">
             <ExternalLink className="h-4 w-4" />
-            UniSync only accesses data you explicitly allow. Canvas credentials
-            are handled through your active backend session.
+            UniSync only accesses data you explicitly allow. Canvas and Outlook
+            credentials are handled through your active backend session.
           </p>
         </div>
       </div>
@@ -473,7 +717,7 @@ export default function Integrations() {
                 onClick={() => {
                   setShowCanvasModal(false);
                   setCanvasError(null);
-                  setAccessToken("");
+                  setCanvasAccessToken("");
                 }}
                 className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
               >
@@ -501,8 +745,8 @@ export default function Integrations() {
                 </label>
                 <input
                   type="password"
-                  value={accessToken}
-                  onChange={(e) => setAccessToken(e.target.value)}
+                  value={canvasAccessToken}
+                  onChange={(e) => setCanvasAccessToken(e.target.value)}
                   placeholder="Paste your Canvas access token"
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none"
                 />
@@ -521,9 +765,79 @@ export default function Integrations() {
                   onClick={() => {
                     setShowCanvasModal(false);
                     setCanvasError(null);
-                    setAccessToken("");
+                    setCanvasAccessToken("");
                   }}
                   disabled={loadingCanvas}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOutlookModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">
+                  Connect Outlook
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Enter your Microsoft Graph access token to connect Outlook.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOutlookModal(false);
+                  setOutlookError(null);
+                  setOutlookAccessToken("");
+                }}
+                className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-foreground">
+                  Microsoft Graph Access Token
+                </label>
+                <input
+                  type="password"
+                  value={outlookAccessToken}
+                  onChange={(e) => setOutlookAccessToken(e.target.value)}
+                  placeholder="Paste your Graph access token"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none"
+                />
+              </div>
+
+              {outlookError && (
+                <p className="text-sm text-red-500">{outlookError}</p>
+              )}
+
+              <div className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                Use the actual Microsoft Graph <span className="font-medium">access_token</span>.
+                Tokens that are not valid Graph access tokens will fail to connect.
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <Button onClick={handleOutlookConnect} disabled={loadingOutlook}>
+                  {loadingOutlook ? "Connecting..." : "Save and Connect"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowOutlookModal(false);
+                    setOutlookError(null);
+                    setOutlookAccessToken("");
+                  }}
+                  disabled={loadingOutlook}
                 >
                   Cancel
                 </Button>
