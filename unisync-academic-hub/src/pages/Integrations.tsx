@@ -55,7 +55,7 @@ const initialIntegrations: Integration[] = [
     id: "corq",
     name: "Corq Events",
     icon: "🎓",
-    status: "pending",
+    status: "connected",
     permissions: ["View campus events", "Access event details and locations"],
   },
   {
@@ -254,7 +254,7 @@ function IntegrationCard({
           </Button>
         ) : (
           <Button variant="outline" size="sm" className="h-8">
-            Complete Setup
+            Disconnect
           </Button>
         )}
       </div>

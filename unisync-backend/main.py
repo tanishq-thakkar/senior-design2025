@@ -15,6 +15,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
+import re
+from datetime import timedelta
+from bs4 import BeautifulSoup
+
+
+
 load_dotenv()
 
 if not os.getenv("OPENAI_API_KEY"):
@@ -198,6 +204,8 @@ def require_outlook_credentials(request: Request) -> dict:
     return creds
 
 
+
+
 def canvas_get(
     creds: dict,
     path: str,
@@ -315,12 +323,12 @@ def build_reasoning_summary(
     confidence = "partial"
 
     if any(
-        word in text
-        for word in [
-            "assignment", "deadline", "canvas", "course", "class",
-            "grade", "announcement", "schedule", "timetable", "calendar"
-        ]
-    ):
+    word in text
+    for word in [
+        "assignment", "deadline", "canvas", "course", "class",
+        "grade", "announcement", "syllabus"
+    ]
+):
         if "canvas" not in sources_checked:
             sources_checked.append("canvas")
         confidence = "high"
@@ -330,11 +338,11 @@ def build_reasoning_summary(
             sources_checked.append("outlook")
         confidence = "high"
 
-    if any(word in text for word in ["calendar", "meeting", "schedule", "event"]):
+    if any(word in text for word in ["my calendar", "meeting", "my schedule", "class schedule"]):
         if "calendar" not in sources_checked:
             sources_checked.append("calendar")
         confidence = "high"
-
+    
     steps = [
         ReasoningStep(
             label="Interpret request",
@@ -360,6 +368,14 @@ def build_reasoning_summary(
 # -------------------------
 # Canvas Data Helpers
 # -------------------------
+
+@app.get("/events/uc/debug")
+def get_uc_public_events_debug():
+    return {
+        "all_events": scrape_uc_public_events(),
+        "today_events": filter_events_for_today(scrape_uc_public_events()),
+        "week_events": filter_events_for_week(scrape_uc_public_events()),
+    }
 
 def get_canvas_courses_data(creds: dict, include_grades: bool = False) -> list[dict]:
     params = {"enrollment_state": "active"}
@@ -434,6 +450,256 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
 
 
 
+# -------------------------
+# UC Public Events Scraping Helpers
+# -------------------------
+
+UC_EVENT_SOURCES = [
+    {
+        "name": "Bearcats Welcome",
+        "url": "https://www.uc.edu/content/uc/campus-life/welcome",
+        "category": "campus-life",
+    },
+    {
+        "name": "Student Affairs",
+        "url": "https://www.uc.edu/campus-life/student-affairs/events.html",
+        "category": "student-affairs",
+    },
+]
+
+MONTH_NAMES = (
+    "january february march april may june july august september october november december"
+).split()
+
+
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def try_parse_uc_date(text: str) -> Optional[str]:
+    text = clean_text(text).lower()
+
+    month_regex = r"(" + "|".join(MONTH_NAMES) + r")\s+\d{1,2}(?:-\d{1,2})?,\s+\d{4}"
+    match = re.search(month_regex, text)
+    if match:
+        raw = match.group(0)
+        normalized = re.sub(r"(\w+\s+\d{1,2})-\d{1,2}(,\s+\d{4})", r"\1\2", raw)
+        try:
+            dt = datetime.strptime(normalized.title(), "%B %d, %Y")
+            return dt.date().isoformat()
+        except Exception:
+            pass
+
+    month_day_year_regex = r"(" + "|".join(MONTH_NAMES) + r")\s+\d{1,2},\s+\d{4}"
+    match = re.search(month_day_year_regex, text)
+    if match:
+        try:
+            dt = datetime.strptime(match.group(0).title(), "%B %d, %Y")
+            return dt.date().isoformat()
+        except Exception:
+            pass
+
+    return None
+
+
+def try_parse_time_from_text(text: str) -> Optional[str]:
+    text = clean_text(text)
+    match = re.search(
+        r"(\d{1,2}(?::\d{2})?\s?(?:am|pm))(?:\s?-\s?(\d{1,2}(?::\d{2})?\s?(?:am|pm)))?",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    start = match.group(1)
+    end = match.group(2)
+    if end:
+        return f"{start} - {end}"
+    return start
+
+
+def fetch_public_page(url: str) -> str:
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": "UniSync/1.0 (+public-events-fetcher)"
+            },
+            timeout=15,
+        )
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Failed to fetch UC events page: {url}",
+            )
+        return response.text
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail=f"Failed to reach UC page: {url}")
+
+
+def scrape_bearcats_welcome(html: str, source_url: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    events = []
+
+    current_date = None
+
+    for tag in soup.find_all(["h3", "h4", "h5"]):
+        text = clean_text(tag.get_text(" ", strip=True))
+        if not text:
+            continue
+
+        parsed_date = try_parse_uc_date(text)
+        if parsed_date:
+            current_date = parsed_date
+            continue
+
+        # event headings often look like "9 am | Donuts in the Den"
+        if "|" in text:
+            parts = [part.strip() for part in text.split("|", 1)]
+            if len(parts) == 2:
+                time_text, title = parts
+                location = None
+                description_parts = []
+
+                sibling = tag.find_next_sibling()
+                steps = 0
+                while sibling and steps < 3:
+                    if sibling.name in ["h2", "h3", "h4", "h5"]:
+                        break
+                    sibling_text = clean_text(sibling.get_text(" ", strip=True))
+                    if sibling_text:
+                        if not location:
+                            location = sibling_text
+                        else:
+                            description_parts.append(sibling_text)
+                    sibling = sibling.find_next_sibling()
+                    steps += 1
+
+                events.append({
+                    "title": title,
+                    "date": current_date,
+                    "time": time_text,
+                    "location": location,
+                    "description": " ".join(description_parts) if description_parts else None,
+                    "source": source_url,
+                    "category": "campus-life",
+                })
+
+    return events
+
+
+def scrape_student_affairs_events(html: str, source_url: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    events = []
+
+    for heading in soup.find_all(["h2", "h3"]):
+        title = clean_text(heading.get_text(" ", strip=True))
+        if not title or title.lower() in {"student affairs", "signature celebrations", "signature events"}:
+            continue
+
+        description_parts = []
+        sibling = heading.find_next_sibling()
+        steps = 0
+        while sibling and steps < 3:
+            if sibling.name in ["h1", "h2", "h3"]:
+                break
+            text = clean_text(sibling.get_text(" ", strip=True))
+            if text:
+                description_parts.append(text)
+            sibling = sibling.find_next_sibling()
+            steps += 1
+
+        description = " ".join(description_parts[:2])
+
+        events.append({
+            "title": title,
+            "date": try_parse_uc_date(description or title),
+            "time": try_parse_time_from_text(description or title),
+            "location": None,
+            "description": description or None,
+            "source": source_url,
+            "category": "student-affairs",
+        })
+
+    return events
+
+
+def scrape_uc_public_events() -> list[dict]:
+    all_events = []
+
+    for source in UC_EVENT_SOURCES:
+        html = fetch_public_page(source["url"])
+
+        if "welcome" in source["url"]:
+            events = scrape_bearcats_welcome(html, source["url"])
+        else:
+            events = scrape_student_affairs_events(html, source["url"])
+
+        all_events.extend(events)
+
+    # dedupe by title+date
+    seen = set()
+    deduped = []
+    for event in all_events:
+        key = (event.get("title"), event.get("date"), event.get("time"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+
+    return deduped
+
+
+def filter_events_for_today(events: list[dict]) -> list[dict]:
+    today = datetime.now().date().isoformat()
+    return [event for event in events if event.get("date") == today]
+
+
+def filter_events_for_week(events: list[dict]) -> list[dict]:
+    today = datetime.now().date()
+    end_date = today + timedelta(days=7)
+
+    filtered = []
+    for event in events:
+        event_date = event.get("date")
+        if not event_date:
+            continue
+        try:
+            parsed = datetime.fromisoformat(event_date).date()
+            if today <= parsed <= end_date:
+                filtered.append(event)
+        except Exception:
+            continue
+
+    return filtered
+
+def should_use_uc_events(user_text: str) -> bool:
+    text = user_text.lower()
+    return any(phrase in text for phrase in [
+        "events near me",
+        "what's happening",
+        "what is happening",
+        "campus events",
+        "uc events",
+        "events today",
+        "events this week",
+        "things to do",
+        "what events are happening"
+    ])
+
+
+def should_use_canvas_calendar(user_text: str) -> bool:
+    text = user_text.lower()
+    return any(phrase in text for phrase in [
+        "my calendar",
+        "my schedule",
+        "my class schedule",
+        "my assignments",
+        "my deadlines",
+        "canvas calendar",
+        "my meetings"
+    ])
 
 
 # -------------------------
@@ -443,11 +709,33 @@ def get_canvas_dashboard_bundle(creds: dict) -> dict:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+    
+
 
 
 # -------------------------
 # Canvas Routes
 # -------------------------
+
+# -------------------------
+# UC Public Events Routes
+# -------------------------
+
+@app.get("/events/uc/all")
+def get_uc_public_events():
+    return scrape_uc_public_events()
+
+
+@app.get("/events/uc/today")
+def get_uc_public_events_today():
+    events = scrape_uc_public_events()
+    return filter_events_for_today(events)
+
+
+@app.get("/events/uc/week")
+def get_uc_public_events_week():
+    events = scrape_uc_public_events()
+    return filter_events_for_week(events)
 
 @app.post("/canvas/connect")
 def connect_canvas(body: CanvasConnectRequest, response: Response):
@@ -737,6 +1025,24 @@ def get_tools_schema():
             }
         },
         {
+    "type": "function",
+    "function": {
+        "name": "get_uc_public_events",
+        "description": "Get public University of Cincinnati campus events, including today or this week.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timeframe": {
+                    "type": "string",
+                    "enum": ["today", "week", "all"],
+                    "description": "Which UC events timeframe to fetch."
+                }
+            },
+            "required": []
+        }
+    }
+},
+        {
             "type": "function",
             "function": {
                 "name": "get_canvas_assignments",
@@ -892,90 +1198,150 @@ def get_tools_schema():
 
 
 def execute_tool(tool_name: str, args: dict, request: Request):
-    if tool_name.startswith("get_canvas"):
-        canvas_creds = require_canvas_credentials(request)
-    else:
-        canvas_creds = None
+    try:
+        if tool_name.startswith("get_canvas"):
+            try:
+                canvas_creds = require_canvas_credentials(request)
+            except HTTPException as e:
+                return {"error": e.detail}
+        else:
+            canvas_creds = None
 
-    if tool_name in (
-        "get_outlook_profile",
-        "get_outlook_messages",
-        "read_outlook_message",
-        "send_outlook_email",
-    ):
-        outlook_creds = require_outlook_credentials(request)
-    else:
-        outlook_creds = None
+        if tool_name in (
+            "get_outlook_profile",
+            "get_outlook_messages",
+            "read_outlook_message",
+            "send_outlook_email",
+        ):
+            try:
+                outlook_creds = require_outlook_credentials(request)
+            except HTTPException as e:
+                return {"error": e.detail}
+        else:
+            outlook_creds = None
 
-    if tool_name == "get_canvas_courses":
-        include_grades = args.get("include_grades", False)
-        return get_canvas_courses_data(canvas_creds, include_grades=include_grades)
+        if tool_name == "get_canvas_courses":
+            include_grades = args.get("include_grades", False)
+            return get_canvas_courses_data(canvas_creds, include_grades=include_grades)
 
-    elif tool_name == "get_canvas_assignments":
-        return get_canvas_assignments_data(canvas_creds)
+        elif tool_name == "get_canvas_assignments":
+            return get_canvas_assignments_data(canvas_creds)
 
-    elif tool_name == "get_canvas_announcements":
-        return get_canvas_announcements_data(canvas_creds)
+        elif tool_name == "get_canvas_announcements":
+            return get_canvas_announcements_data(canvas_creds)
 
-    elif tool_name == "get_canvas_grades":
-        return get_canvas_courses_data(canvas_creds, include_grades=True)
+        elif tool_name == "get_canvas_grades":
+            return get_canvas_courses_data(canvas_creds, include_grades=True)
 
-    elif tool_name == "get_canvas_calendar":
-        return get_canvas_calendar_events_data(canvas_creds)
+        elif tool_name == "get_canvas_calendar":
+            return get_canvas_calendar_events_data(canvas_creds)
 
-    elif tool_name == "get_canvas_dashboard":
-        return get_canvas_dashboard_bundle(canvas_creds)
+        elif tool_name == "get_canvas_dashboard":
+            return get_canvas_dashboard_bundle(canvas_creds)
 
-    elif tool_name == "get_privacy_usage":
-        return get_usage_snapshot().model_dump()
+        elif tool_name == "get_privacy_usage":
+            return get_usage_snapshot().model_dump()
 
-    elif tool_name == "get_outlook_profile":
-        return get_outlook_me(outlook_creds["token"])
+        elif tool_name == "get_outlook_profile":
+            return get_outlook_me(outlook_creds["token"])
 
-    elif tool_name == "get_outlook_messages":
-        return get_outlook_messages(
-            access_token=outlook_creds["token"],
-            top=args.get("top", 10),
-            unread_only=args.get("unread_only", False),
-        )
+        elif tool_name == "get_outlook_messages":
+            return get_outlook_messages(
+                access_token=outlook_creds["token"],
+                top=args.get("top", 10),
+                unread_only=args.get("unread_only", False),
+            )
 
-    elif tool_name == "read_outlook_message":
-        return read_outlook_message(
-            access_token=outlook_creds["token"],
-            message_id=args["message_id"],
-        )
+        elif tool_name == "read_outlook_message":
+            if "message_id" not in args:
+                return {"error": "Missing required argument: message_id"}
+            return read_outlook_message(
+                access_token=outlook_creds["token"],
+                message_id=args["message_id"],
+            )
 
-    elif tool_name == "send_outlook_email":
-        return send_outlook_email_via_graph(
-            access_token=outlook_creds["token"],
-            to=args["to"],
-            subject=args["subject"],
-            body=args["body"],
-            cc=args.get("cc"),
-            bcc=args.get("bcc"),
-            save_to_sent_items=args.get("save_to_sent_items", True),
-        )
+        elif tool_name == "send_outlook_email":
+            missing = [field for field in ("to", "subject", "body") if not args.get(field)]
+            if missing:
+                return {"error": f"Missing required argument(s): {', '.join(missing)}"}
+            return send_outlook_email_via_graph(
+                access_token=outlook_creds["token"],
+                to=args["to"],
+                subject=args["subject"],
+                body=args["body"],
+                cc=args.get("cc"),
+                bcc=args.get("bcc"),
+                save_to_sent_items=args.get("save_to_sent_items", True),
+            )
 
-    else:
-        raise ValueError(f"Unknown tool: {tool_name}")
+        elif tool_name == "get_uc_public_events":
+            timeframe = args.get("timeframe", "all")
+            events = scrape_uc_public_events()
+
+            if timeframe == "week":
+                week_events = filter_events_for_week(events)
+                return week_events if week_events else events
+
+            return events
+
+        else:
+            return {"error": f"Unknown tool: {tool_name}"}
+
+    except HTTPException as e:
+        return {"error": e.detail}
+    except Exception as e:
+        print(f"TOOL ERROR [{tool_name}]:", repr(e))
+        return {"error": str(e)}
 
 
 def run_agent_with_tools(convo: Conversation, request: Request) -> str:
+    latest_user_message = convo.messages[-1].content if convo.messages else ""
+
+    if should_use_uc_events(latest_user_message):
+        all_events = scrape_uc_public_events()
+        print("SCRAPED EVENTS COUNT:", len(all_events))
+        print("SCRAPED EVENTS SAMPLE:", all_events[:10])
+
+        result = all_events
+        print("ALL EVENTS COUNT:", len(result))
+        print("ALL EVENTS SAMPLE:", result[:10])
+
+        if not result:
+            return "I checked the public UC campus events scraper and I could not find any public UC events right now."
+
+        lines = []
+        for event in result[:10]:
+            title = event.get("title", "Untitled event")
+            time = event.get("time")
+            location = event.get("location")
+            source = event.get("source")
+
+            parts = [f"• {title}"]
+            if time:
+                parts.append(f"Time: {time}")
+            if location:
+                parts.append(f"Location: {location}")
+            if source:
+                parts.append(f"Source: {source}")
+
+            lines.append(" | ".join(parts))
+
+        return "Here are some UC public events I found:\n\n" + "\n".join(lines)
+
+    if should_use_canvas_calendar(latest_user_message):
+        result = execute_tool("get_canvas_calendar", {}, request)
+        return json.dumps(result, default=str)
+
     system_message = (
         "You are UniSync, a helpful academic assistant for university students. "
         "Be clear, concise, practical, and friendly. "
-        "Use tools whenever live student data is needed, especially for courses, assignments, grades, announcements, deadlines, calendar questions, or Outlook email tasks. "
-        "If Canvas is not connected and the user asks for Canvas-specific information, clearly tell them to connect Canvas. "
-        "If Outlook is not connected and the user asks to read emails, check recent emails, or send email, clearly tell them to connect Outlook. "
-        "Use Outlook tools for both reading and sending email. "
-        "Do not invent grades, assignments, deadlines, announcements, emails, or email send results. "
-        "Before sending email, ensure you have enough details like recipient, subject, and body from the conversation."
+        "Use Canvas tools only for personal academic data like courses, assignments, grades, announcements, and personal schedule. "
+        "Use the UC public events tool for public campus events, things happening on campus, and events near the user. "
+        "Do not use Canvas calendar for public campus events."
     )
 
     messages = [{"role": "system", "content": system_message}]
-    messages.extend(
-        [{"role": msg.role, "content": msg.content} for msg in convo.messages]
-    )
+    messages.extend([{"role": msg.role, "content": msg.content} for msg in convo.messages])
 
     tools = get_tools_schema()
 
@@ -986,52 +1352,35 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
         tool_choice="auto",
     )
 
-    assistant_message = response.choices[0].message
+    response_message = response.choices[0].message
 
-    if not assistant_message.tool_calls:
-        return (assistant_message.content or "").strip() or "Sorry, I could not generate a response."
+    if response_message.tool_calls:
+        tool_outputs = []
+        messages.append(response_message)
 
-    messages.append({
-        "role": "assistant",
-        "content": assistant_message.content or "",
-        "tool_calls": [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            }
-            for tc in assistant_message.tool_calls
-        ],
-    })
+        for tool_call in response_message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_args = json.loads(tool_call.function.arguments or "{}")
+            tool_result = execute_tool(tool_name, tool_args, request)
 
-    for tool_call in assistant_message.tool_calls:
-        tool_name = tool_call.function.name
-        try:
-            args = json.loads(tool_call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            args = {}
+            tool_outputs.append(
+                {
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": tool_name,
+                    "content": json.dumps(tool_result, default=str),
+                }
+            )
 
-        try:
-            result = execute_tool(tool_name, args, request)
-            tool_result = json.dumps(result, default=str)
-        except Exception as e:
-            tool_result = json.dumps({"error": str(e)})
+        messages.extend(tool_outputs)
 
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": tool_result,
-        })
+        final_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+        )
 
-    final_response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-    )
+        return final_response.choices[0].message.content or "I could not generate a response."
 
-    return (final_response.choices[0].message.content or "").strip() or "Sorry, I could not generate a response."
 
 
 # -------------------------
@@ -1210,11 +1559,7 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     )
     convo.messages.append(user_message)
 
-    user_messages = [m for m in convo.messages if m.role == "user"]
-    if len(user_messages) == 1:
-        convo.title = make_title(body.content)
-
-    reasoning_steps, confidence, sources_checked, last_synced = build_reasoning_summary(
+    reasoning_summary, confidence, sources_checked, last_synced = build_reasoning_summary(
         body.content,
         convo,
     )
@@ -1222,6 +1567,8 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     try:
         assistant_text = run_agent_with_tools(convo, request)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print("OPENAI CHAT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1230,16 +1577,15 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
         role="assistant",
         content=assistant_text,
         timestamp=now_iso(),
-        reasoningSummary=reasoning_steps,
+        reasoningSummary=reasoning_summary,
         confidence=confidence,
         sourcesChecked=sources_checked,
         lastSynced=last_synced,
     )
-
     convo.messages.append(assistant_message)
+
     convo.lastMessage = assistant_text
     convo.timestamp = now_iso()
-    conversations_store[convo_id] = convo
 
     return SendMessageResponse(
         assistant=assistant_text,
