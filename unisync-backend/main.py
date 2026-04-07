@@ -145,17 +145,6 @@ class OutlookStatusResponse(BaseModel):
     connected: bool
     user: Optional[dict] = None
 
-class TranslationRequest(BaseModel):
-    text: str
-    target_language: str
-    source_language: Optional[str] = "auto"
-
-
-class TranslationResponse(BaseModel):
-    original_text: str
-    translated_text: str
-    source_language: str
-    target_language: str
 
 
 
@@ -170,6 +159,26 @@ outlook_session_store: dict[str, dict] = {}
 # -------------------------
 # Helpers
 # -------------------------
+
+def detect_language_code(text: str) -> str:
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Detect the language of the user's text. "
+                        "Return only a short language code like en, hi, es, fr, de, ar, zh."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        )
+        detected = (response.choices[0].message.content or "en").strip().lower()
+        return detected or "en"
+    except Exception:
+        return "en"
 
 CANVAS_SESSION_COOKIE = "unisync_canvas_sid"
 OUTLOOK_SESSION_COOKIE = "unisync_outlook_sid"
@@ -382,37 +391,7 @@ def build_reasoning_summary(
 
     return steps, confidence, sources_checked, now_iso()
 
-def translate_text(text: str, target_language: str, source_language: str = "auto") -> dict:
-    if not text.strip():
-        return {
-            "original_text": text,
-            "translated_text": text,
-            "source_language": source_language,
-            "target_language": target_language,
-        }
 
-    prompt = (
-        f"Translate the following text from {source_language} to {target_language}. "
-        f"Preserve names, course codes, deadlines, URLs, and email addresses exactly.\n\n"
-        f"Text:\n{text}"
-    )
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a precise translation assistant."},
-            {"role": "user", "content": prompt},
-        ],
-    )
-
-    translated = response.choices[0].message.content or text
-
-    return {
-        "original_text": text,
-        "translated_text": translated,
-        "source_language": source_language,
-        "target_language": target_language,
-    }
 # -------------------------
 # Canvas Data Helpers
 # -------------------------
@@ -785,14 +764,6 @@ def get_uc_public_events_week():
     events = scrape_uc_public_events()
     return filter_events_for_week(events)
 
-@app.post("/translate", response_model=TranslationResponse)
-def translate_endpoint(body: TranslationRequest):
-    result = translate_text(
-        text=body.text,
-        target_language=body.target_language,
-        source_language=body.source_language or "auto",
-    )
-    return TranslationResponse(**result)
 
 @app.post("/canvas/connect")
 def connect_canvas(body: CanvasConnectRequest, response: Response):
@@ -1351,23 +1322,16 @@ def execute_tool(tool_name: str, args: dict, request: Request):
         return {"error": str(e)}
 
 
-def run_agent_with_tools(convo: Conversation, request: Request) -> str:
+def run_agent_with_tools(convo: Conversation, request: Request, output_language: str = "en") -> str:
     latest_user_message = convo.messages[-1].content if convo.messages else ""
 
     if should_use_uc_events(latest_user_message):
         all_events = scrape_uc_public_events()
-        print("SCRAPED EVENTS COUNT:", len(all_events))
-        print("SCRAPED EVENTS SAMPLE:", all_events[:10])
-
-        result = all_events
-        print("ALL EVENTS COUNT:", len(result))
-        print("ALL EVENTS SAMPLE:", result[:10])
-
-        if not result:
+        if not all_events:
             return "I checked the public UC campus events scraper and I could not find any public UC events right now."
 
         lines = []
-        for event in result[:10]:
+        for event in all_events[:10]:
             title = event.get("title", "Untitled event")
             time = event.get("time")
             location = event.get("location")
@@ -1390,12 +1354,15 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
         return json.dumps(result, default=str)
 
     system_message = (
-        "You are UniSync, a helpful academic assistant for university students. "
-        "Be clear, concise, practical, and friendly. "
-        "Use Canvas tools only for personal academic data like courses, assignments, grades, announcements, and personal schedule. "
-        "Use the UC public events tool for public campus events, things happening on campus, and events near the user. "
-        "Do not use Canvas calendar for public campus events."
-    )
+    "You are UniSync, a helpful academic assistant for university students. "
+    "Be clear, concise, practical, and friendly. "
+    "Use Canvas tools only for personal academic data like courses, assignments, grades, announcements, and personal schedule. "
+    "Use the UC public events tool for public campus events, things happening on campus, and events near the user. "
+    "Do not use Canvas calendar for public campus events. "
+    f"Reply fully in this language code: {output_language}. "
+    "If the user writes in Hindi, reply in Hindi. "
+    "Do not translate names, URLs, course codes, email addresses, or technical identifiers unless necessary."
+)
 
     messages = [{"role": "system", "content": system_message}]
     messages.extend([{"role": msg.role, "content": msg.content} for msg in convo.messages])
@@ -1436,9 +1403,9 @@ def run_agent_with_tools(convo: Conversation, request: Request) -> str:
             messages=messages,
         )
 
-        return response_message.content or "I could not generate a response."
+        return final_response.choices[0].message.content or "I could not generate a response."
 
-
+    return response_message.content or "I could not generate a response."
 
 # -------------------------
 # Outlook Routes
@@ -1584,13 +1551,6 @@ def create_conversation():
     return convo
 
 
-@app.get("/chat/conversations/{convo_id}/messages", response_model=list[Message])
-def get_messages(convo_id: str):
-    convo = conversations_store.get(convo_id)
-    if not convo:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return convo.messages
-
 
 @app.delete("/chat/conversations/{convo_id}")
 def delete_conversation(convo_id: str):
@@ -1602,6 +1562,14 @@ def delete_conversation(convo_id: str):
     return {"success": True, "deletedConversationId": convo_id}
 
 
+@app.get("/chat/conversations/{convo_id}/messages", response_model=list[Message])
+def get_messages(convo_id: str):
+    convo = conversations_store.get(convo_id)
+    if not convo:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return convo.messages
+
+
 @app.post("/chat/conversations/{convo_id}/messages", response_model=SendMessageResponse)
 def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     convo = conversations_store.get(convo_id)
@@ -1611,20 +1579,6 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     prefs = body.language_prefs or LanguagePreferences()
     user_input = body.content
     working_input = user_input
-
-    print("body.content:", repr(body.content))
-    print("prefs:", prefs.model_dump())
-
-    # Translate user input into English for internal routing
-    if prefs.input_language != "en":
-        translated_in = translate_text(
-            text=user_input,
-            target_language="en",
-            source_language=prefs.input_language or "auto",
-        )
-        working_input = translated_in.get("translated_text") or user_input
-
-    print("working_input after translation:", repr(working_input))
 
     user_message = Message(
         id=str(uuid4()),
@@ -1639,38 +1593,32 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
         convo,
     )
 
+    detected_input_language = (
+        detect_language_code(user_input)
+        if prefs.input_language == "auto"
+        else prefs.input_language
+    )
+
+    output_text_language = (
+        detected_input_language
+        if prefs.output_text_language in (None, "", "auto")
+        else prefs.output_text_language
+    )
+
     try:
-        assistant_text = run_agent_with_tools(convo, request)
-        print("assistant_text from run_agent:", repr(assistant_text))
+        assistant_text = run_agent_with_tools(convo, request, output_language=output_text_language)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print("OPENAI CHAT ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=str(e))
 
     if not assistant_text or not isinstance(assistant_text, str):
         assistant_text = "I could not generate a response."
 
-    final_text = assistant_text
-
-    # Translate assistant output back into selected language
-    if prefs.output_text_language != "en":
-        translated_out = translate_text(
-            text=assistant_text,
-            target_language=prefs.output_text_language,
-            source_language="en",
-        )
-        final_text = translated_out.get("translated_text") or assistant_text
-
-    if not final_text or not isinstance(final_text, str):
-        final_text = assistant_text or "I could not generate a response."
-
-    print("final_text after translation:", repr(final_text))
-
     assistant_message = Message(
         id=str(uuid4()),
         role="assistant",
-        content=final_text,
+        content=assistant_text,
         timestamp=now_iso(),
         reasoningSummary=reasoning_summary,
         confidence=confidence,
@@ -1679,11 +1627,11 @@ def send_message(convo_id: str, body: SendMessageRequest, request: Request):
     )
     convo.messages.append(assistant_message)
 
-    convo.lastMessage = final_text
+    convo.lastMessage = assistant_text
     convo.timestamp = now_iso()
 
     return SendMessageResponse(
-        assistant=final_text,
+        assistant=assistant_text,
         message=assistant_message,
     )
 
@@ -1721,6 +1669,8 @@ def delete_all_data():
         "success": True,
         "message": "All backend UniSync conversation and connected session data has been deleted.",
     }
+
+
 
 
 # -------------------------
