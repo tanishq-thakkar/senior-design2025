@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Mic, MicOff, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, ngrokSkipBrowserWarningHeaders } from "@/lib/api";
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -123,6 +123,9 @@ export function ChatInput({
 
           const response = await fetch(`${API_BASE}/voice/transcribe`, {
             method: "POST",
+            headers: {
+              ...ngrokSkipBrowserWarningHeaders(),
+            },
             body: formData,
           });
 

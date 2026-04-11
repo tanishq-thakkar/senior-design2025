@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpen, CalendarDays, AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-const API_BASE = "http://localhost:8000";
+import { API_BASE, ngrokSkipBrowserWarningHeaders } from "@/lib/api";
 
 type CanvasCourse = {
   id: number;
@@ -32,6 +31,9 @@ export default function Schedule() {
 
       const res = await fetch(`${API_BASE}/canvas/courses`, {
         credentials: "include",
+        headers: {
+          ...ngrokSkipBrowserWarningHeaders(),
+        },
       });
 
       const contentType = res.headers.get("content-type") || "";

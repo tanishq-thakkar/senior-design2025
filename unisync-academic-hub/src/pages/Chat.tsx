@@ -12,6 +12,7 @@ import {
   useApiMutation,
   apiFetch,
   API_BASE,
+  ngrokSkipBrowserWarningHeaders,
 } from "@/lib/api";
 import type { Message, Conversation } from "@/types/chat";
 
@@ -91,6 +92,7 @@ export default function Chat() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...ngrokSkipBrowserWarningHeaders(),
           },
           body: JSON.stringify({
             text: assistantResponse.assistant,

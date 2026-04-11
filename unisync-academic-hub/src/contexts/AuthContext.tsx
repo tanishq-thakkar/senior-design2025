@@ -7,8 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { getSupabase, isSupabaseConfigured } from "@/lib/supabaseClient";
+import type { AuthError, Session, User } from "@supabase/supabase-js";
+import { getAuthSiteUrl, getSupabase, isSupabaseConfigured } from "@/lib/supabaseClient";
 
 type AuthContextValue = {
   session: Session | null;
@@ -21,6 +21,14 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+function formatAuthError(error: AuthError): string {
+  const bits = [error.message];
+  if (error.status) bits.push(`HTTP ${error.status}`);
+  const code = "code" in error && typeof (error as { code?: string }).code === "string" ? (error as { code?: string }).code : undefined;
+  if (code) bits.push(code);
+  return bits.join(" · ");
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -57,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const supabase = getSupabase();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error ? new Error(error.message) : null };
+    return { error: error ? new Error(formatAuthError(error)) : null };
   }, []);
 
   const signUp = useCallback(async (email: string, password: string, fullName?: string) => {
@@ -68,9 +76,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { error } = await supabase.auth.signUp({
       email,
       password,
-      options: fullName ? { data: { full_name: fullName } } : undefined,
+      options: {
+        emailRedirectTo: getAuthSiteUrl(),
+        ...(fullName ? { data: { full_name: fullName } } : {}),
+      },
     });
-    return { error: error ? new Error(error.message) : null };
+    return { error: error ? new Error(formatAuthError(error)) : null };
   }, []);
 
   const signOut = useCallback(async () => {

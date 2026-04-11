@@ -42,6 +42,17 @@ function toastAuthError(err: Error) {
     );
     return;
   }
+  if (m.includes("email not confirmed") || m.includes("email_not_confirmed")) {
+    toast.error(
+      "Supabase is waiting for email confirmation. In the dashboard: Authentication → Users → confirm the user, or turn off “Confirm email” under Providers → Email for testing.",
+      { duration: 14_000 },
+    );
+    return;
+  }
+  if (m.includes("invalid login") || m.includes("invalid credentials")) {
+    toast.error("Wrong email or password. If you just signed up, confirm your email or use “Sign up” again.");
+    return;
+  }
   toast.error(err.message);
 }
 

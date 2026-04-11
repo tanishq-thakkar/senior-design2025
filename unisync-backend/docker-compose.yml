@@ -1,0 +1,44 @@
+# UniSync API in Docker. CloudFront is HTTPS — browsers block calling http://localhost from that page.
+# Use the optional Cloudflare Tunnel (cloudflared) so the deployed frontend can reach your machine.
+# Quick Tunnels need no API token; the public URL is printed in `docker compose logs cloudflared`.
+#
+# 1) Create unisync-backend/.env with at least OPENAI_API_KEY=...
+# 2) Optional: ALLOW_ORIGINS=https://YOURID.cloudfront.net
+# 3) Run API only:
+#      docker compose up --build
+# 4) Run API + tunnel:
+#      docker compose --profile tunnel up --build
+#    Copy the https://….trycloudflare.com URL from logs, set VITE_API_URL to that URL (no path, no :8000),
+#    rebuild the frontend, deploy / invalidate CloudFront.
+#
+# If Wi‑Fi still breaks HTTPS to tunnels, try another network or IPv6 settings — that is outside the app.
+# Switching from ngrok to Cloudflare often helps when an ISP/router blocks ngrok’s paths.
+#
+# If you see `Failed to initialize DNS local resolver` / `region1.v2.argotunnel.com: i/o timeout`, it is often
+# harmless (tunnel still works). We use HTTP/2 to the edge instead of QUIC to reduce Docker UDP/DNS quirks.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Values come from a .env file next to this file (Compose loads it for ${...}) or your shell.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env or export it}
+      ALLOW_ORIGINS: ${ALLOW_ORIGINS:-}
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    command:
+      - tunnel
+      - --protocol
+      - http2
+      - --url
+      - http://api:8000
+    depends_on:
+      - api

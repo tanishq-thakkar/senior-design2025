@@ -43,13 +43,30 @@ _extra_origins = [
 ]
 _cors_origins = list(dict.fromkeys(_default_cors_origins + _extra_origins))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Browsers send Origin = the page host (e.g. CloudFront), not the tunnel hostname. Allow CloudFront plus
+# common tunnel dev hostnames (Cloudflare Quick Tunnel, ngrok). Set TUNNEL_CORS_REGEX=0 (legacy:
+# NGROK_CORS_REGEX=0) to disable and rely on ALLOW_ORIGINS only.
+_tunnel_cors_regex = os.getenv(
+    "TUNNEL_CORS_REGEX",
+    os.getenv("NGROK_CORS_REGEX", "1"),
+).lower() not in ("0", "false", "no")
+
+_cors_kwargs: dict = {
+    "allow_origins": _cors_origins,
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if _tunnel_cors_regex:
+    _cors_kwargs["allow_origin_regex"] = (
+        r"https://("
+        r"[a-z0-9]+\.cloudfront\.net|"
+        r".*\.trycloudflare\.com|"
+        r".*\.(ngrok-free\.app|ngrok-free\.dev|ngrok\.app|ngrok\.io)(:\d+)?"
+        r")$"
+    )
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # -------------------------
 # Models

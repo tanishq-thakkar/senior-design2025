@@ -11,8 +11,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { Integration } from "@/types/chat";
 import { formatDistanceToNow } from "date-fns";
+import { API_BASE, ngrokSkipBrowserWarningHeaders } from "@/lib/api";
 
-const API_BASE = "http://localhost:8000";
 const CANVAS_BASE_URL_KEY = "unisync_canvas_base_url";
 const CANVAS_TOKEN_KEY = "unisync_canvas_token";
 const OUTLOOK_TOKEN_KEY = "unisync_outlook_token";
@@ -324,6 +324,9 @@ export default function Integrations() {
     try {
       const res = await fetch(`${API_BASE}/canvas/status`, {
         credentials: "include",
+        headers: {
+          ...ngrokSkipBrowserWarningHeaders(),
+        },
       });
 
       const data: CanvasStatusResponse = await res.json();
@@ -385,6 +388,7 @@ export default function Integrations() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...ngrokSkipBrowserWarningHeaders(),
         },
         credentials: "include",
         body: JSON.stringify({
@@ -471,6 +475,9 @@ export default function Integrations() {
 
       const res = await fetch(`${API_BASE}/canvas/disconnect`, {
         method: "POST",
+        headers: {
+          ...ngrokSkipBrowserWarningHeaders(),
+        },
         credentials: "include",
       });
 
